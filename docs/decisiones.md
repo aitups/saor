@@ -188,6 +188,28 @@
   (activos 4-bit) + metadatos `saor.blk.N.<rol>.*` por bloque.
 - Tests: +3 Python (roles SSM/attn, esparcibles, cobertura). Suite: 35 Python.
 
+## D17 — Fase 1: GGUF embebido (rewriter streaming) + hallazgo de escalado en `topology_from_dense`
+- Nuevo `saor-streamer::gguf_embed`: rewriter **streaming** que sustituye tensores
+  densos por bloques dispersos embebidos (`blk.N.<rol>.ffn_dag_adjacency` +
+  `ffn_dag_weights` + metadatos `saor.<base>.*` por bloque y `saor.sparse_count`).
+  Nunca carga la sección de datos completa. Subcomando `saor-engine embed
+  --src --dst --block <t> --sparse <gguf>` con verificación automática
+  (re-lee el bloque embebido y compara).
+- **Bug corregido (crítico para interop):** el parseo de KV GGUF usaba tamaños
+  erróneos (`FLOAT32=6` como 8 bytes en vez de 4; UINT8/16 etc.). Afectaba a
+  cualquier GGUF real con metadatos FLOAT32 escalares. Ahora la tabla de
+  tamaños por tipo es exacta y se soportan ARRAY de STRING (tokenizer).
+- **Checkpoint SmolLM2 ✓:** embebe `blk.0.ffn_gate` (576×1536, 378K activos) en
+  el GGUF completo: `verified:[true]`, tensores dispersos presentes y metadatos
+  `saor.*` correctos. `hayai plan` parsea el GGUF embebido con `status: OK` y
+  mapea los tensores a ops conocidas (`FfnDagAdjacency`/`FfnDagWeights`).
+- **Hallazgo de escalado (D17):** la evolución de un bloque ALIA real
+  (8192×24576, 201M conexiones) tarda ~30 s/candidato (vs ~0.07 s en SmolLM2).
+  El cuello de botella es el loop CPU `topology_from_dense` (O(N) por candidato)
+  + SpMM 121M no-ceros. Proyección: ~36 min/bloque × 144 tensores ≈ 86 h —
+  **inaceptable para la Fase 4**. Plan: kernel GPU de "gather" de pesos del
+  profesor en las posiciones activas (elimina el loop CPU) en la Fase 3/4.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).

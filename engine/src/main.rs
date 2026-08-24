@@ -10,6 +10,7 @@ use serde::Serialize;
 
 mod consolidate;
 mod decode_bench;
+mod embed;
 mod evolve;
 mod kernels_run;
 
@@ -36,6 +37,7 @@ fn main() -> ExitCode {
         Some("kernels-run") => kernels_run::cmd(&args[2..]),
         Some("evolve") => evolve::cmd(&args[2..]),
         Some("consolidate") => consolidate::cmd(&args[2..]),
+        Some("embed") => embed::cmd(&args[2..]),
         Some("decode-bench") => decode_bench::cmd(&args[2..]),
         Some("version") => {
             println!(

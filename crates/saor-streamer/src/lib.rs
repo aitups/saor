@@ -13,6 +13,7 @@
 
 #![deny(missing_docs)]
 
+pub mod gguf_embed;
 pub mod gguf_sparse;
 pub mod pinned;
 pub mod quant;
