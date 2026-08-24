@@ -222,6 +222,10 @@ impl ClEngine {
         d_out: usize,
     ) -> Result<Vec<f32>, String> {
         let batch = x.len() / d_in;
+        // Topología vacía (τ alto): OpenCL no admite buffers de tamaño 0.
+        if col_idx.is_empty() || vals.is_empty() {
+            return Ok(vec![0.0f32; batch * d_out]);
+        }
         let mut xb = self.buffer::<f32>(x.len())?;
         let mut rp = self.buffer::<i32>(row_ptr.len())?;
         let mut ci = self.buffer::<i32>(col_idx.len())?;

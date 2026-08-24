@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
+mod evolve;
 mod kernels_run;
 
 /// Resultado de `device-info` en formato JSON (consumible por Python).
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("device-info") => cmd_device_info(),
         Some("kernels-run") => kernels_run::cmd(&args[2..]),
+        Some("evolve") => evolve::cmd(&args[2..]),
         Some("version") => {
             println!(
                 "saor-engine {} (domain {}, streamer {}, opencl)",
@@ -42,11 +44,11 @@ fn main() -> ExitCode {
         }
         Some(other) => {
             eprintln!("saor-engine: comando desconocido '{other}'");
-            eprintln!("uso: saor-engine <device-info|kernels-run|version>");
+            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|version>");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("uso: saor-engine <device-info|kernels-run|version>");
+            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|version>");
             ExitCode::from(2)
         }
     }

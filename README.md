@@ -64,6 +64,6 @@ cd python
 | 1 — Referencia NumPy | ✅ completada (cppn, topology, cka, cmaes, reconciler, arch_distance + 14 tests) |
 | 2 — Núcleo Rust (streaming/memoria) | ✅ completada (PinnedMemoryAllocator, cuantización 4-bit, doble buffer con prefetch, GGUF disperso + 12 tests) |
 | 3 — Kernels OpenCL 3.0 | ✅ completada (cppn_decode, spmm_dense/csr, gram + `validate_opencl.py`; err < 1e-6 en RTX 4050) |
-| 4 — Loop evolutivo integrado | ⏳ siguiente |
-| 5 — Hooks del modelo real | ⏳ |
+| 4 — Loop evolutivo integrado | ✅ completada (`evolve`: CPPN→topología→SpMM→Gram→CKA→CMA-ES, seed replay, τ evolutivo; CKA ↑ y sparsity ≥ 0.4) |
+| 5 — Hooks del modelo real | ⏳ siguiente |
 | 6 — Cierre (contrato de Fase 2) | ⏳ |
