@@ -62,8 +62,9 @@ cd python
 |---|---|
 | 0 — Fundación y toolchain | ✅ completada (workspace, MSVC/CMake, OpenCL.lib, `device-info`, smoke tests) |
 | 1 — Referencia NumPy | ✅ completada (cppn, topology, cka, cmaes, reconciler, arch_distance + 14 tests) |
-| 2 — Núcleo Rust (streaming/memoria) | ✅ completada (PinnedMemoryAllocator, cuantización 4-bit, doble buffer con prefetch, GGUF disperso + 12 tests) |
+| 2 — Núcleo Rust (streaming/memoria) | ✅ completada (PinnedMemoryAllocator, cuantización 4-bit, doble buffer con prefetch, GGUF disperso + 13 tests) |
 | 3 — Kernels OpenCL 3.0 | ✅ completada (cppn_decode, spmm_dense/csr, gram + `validate_opencl.py`; err < 1e-6 en RTX 4050) |
-| 4 — Loop evolutivo integrado | ✅ completada (`evolve`: CPPN→topología→SpMM→Gram→CKA→CMA-ES, seed replay, τ evolutivo; CKA ↑ y sparsity ≥ 0.4) |
-| 5 — Hooks del modelo real | ✅ infraestructura (gguf_audit, role_catalog, calibration B=128, backend sintético); captura real pendiente del GGUF 30B (D8) |
-| 6 — Cierre (contrato de Fase 2) | ✅ GGUF disperso sin densificar (`consolidate`) + contrato (`contract.py`: D_arch ≥ 0.4, fidelidad, no-dormant); KL/ARC/GSM8K reales pendientes del runtime |
+| 4 — Loop evolutivo integrado | ✅ completada (`evolve`: CPPN→topología→SpMM→Gram→CKA→CMA-ES, seed replay, τ evolutivo) |
+| 5 — Hooks del modelo real | ✅ infraestructura + **piloto real** (`pilot_block.py`: profesor real de SmolLM2/Qwen/ALIA vía `hayai dump_tensor_f32` → evolución → consolidación) |
+| 6 — Cierre (contrato de Fase 2) | ✅ GGUF disperso sin densificar + `contract.py`; KL/ARC/GSM8K a nivel de modelo pendientes |
+| 7 — Integración con hayai v0.2.3 | ✅ en curso: formato alineado (I8=24, offsets relativos), `hayai plan`+`load_sparse_dag` OK, fix eventos/decode, piloto de bloque real validado; KL/ARC/GSM8K de modelo completo pendientes |

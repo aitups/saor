@@ -29,6 +29,12 @@ const GRAM_SRC: &str = include_str!("../kernels/gram.cl");
 /// Máximo de work-items por dispatch (mitigación WDDM/TDR).
 pub const WDDM_CHUNK: usize = 8192;
 
+/// Chunk para la decodificación CPPN (1 work-item por conexión): 8K conexiones
+/// por dispatch evita el TDR de Windows (cada dispatch muy por debajo de ~2 s
+/// incluso con presión de registros del evaluador CPPN). Para bloques reales de
+/// 89M–201M conexiones se emiten ~11K–25K dispatches fragmentados.
+pub const CPPN_DECODE_CHUNK: usize = 8192;
+
 /// Motor OpenCL sobre la primera GPU del sistema (RTX 4050).
 pub struct ClEngine {
     context: Context,
@@ -112,7 +118,12 @@ impl ClEngine {
 
     /// Envía un kernel 1D fragmentado en trozos encadenados por eventos
     /// (mitigación WDDM/TDR: ningún dispatch supera ~2 s).
+    ///
+    /// Los `Event`s se mantienen vivos en `events` hasta el final: `opencl3`
+    /// llama a `clReleaseEvent` en el `Drop`, y esperar sobre un evento liberado
+    /// cuelga el dispatch siguiente.
     fn enqueue_chunked(&self, kernel: &Kernel, total: usize, chunk: usize) -> Result<(), String> {
+        let mut events: Vec<opencl3::event::Event> = Vec::new();
         let mut wait: Vec<cl_event> = Vec::new();
         let mut offset = 0usize;
         while offset < total {
@@ -131,8 +142,10 @@ impl ClEngine {
                 )
                 .map_err(|e| format!("enqueue_nd_range_kernel: {e}"))?;
             wait = vec![event.get()];
+            events.push(event);
             offset += size;
         }
+        drop(wait);
         self.queue.finish().map_err(|e| format!("finish: {e}"))?;
         Ok(())
     }
@@ -159,26 +172,36 @@ impl ClEngine {
         d_out: usize,
         tau: f32,
     ) -> Result<(Vec<f32>, Vec<u8>, u32), String> {
-        let n_bytes = (d_in * d_out).div_ceil(8);
+        let total = d_in * d_out;
+        let n_words = total.div_ceil(32);
+        let n_bytes = total.div_ceil(8);
         let mut g = self.buffer::<f32>(genome.len())?;
-        let mut w = self.buffer::<f32>(d_out * d_in)?;
-        let mut a = self.buffer::<u8>(n_bytes)?;
+        let mut w = self.buffer::<f32>(total)?;
+        let mut a_words = self.buffer::<u32>(n_words)?;
         let mut act = self.buffer::<u32>(1)?;
         self.write(&mut g, genome)?;
         self.write(&mut act, &[0u32])?;
+        self.write(&mut a_words, &vec![0u32; n_words])?;
 
+        // Kernel 1: decode por conexión (máximo paralelismo), adyacencia en u32.
         let kernel = self.kernel(0, "cppn_decode")?;
         kernel.set_arg(0, &g).map_err(|e| format!("arg genome: {e}"))?;
         kernel.set_arg(1, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
         kernel.set_arg(2, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
         kernel.set_arg(3, &tau).map_err(|e| format!("arg tau: {e}"))?;
         kernel.set_arg(4, &w).map_err(|e| format!("arg w: {e}"))?;
-        kernel.set_arg(5, &a).map_err(|e| format!("arg adj: {e}"))?;
+        kernel.set_arg(5, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
         kernel.set_arg(6, &act).map_err(|e| format!("arg active: {e}"))?;
+        self.enqueue_chunked(&kernel, total, CPPN_DECODE_CHUNK)?;
 
-        self.enqueue_chunked(&kernel, n_bytes, WDDM_CHUNK)?;
+        // Kernel 2: empaquetado u32 -> bit-tensor u8 (LSB-first).
+        let mut a = self.buffer::<u8>(n_bytes)?;
+        let pack = self.kernel(0, "pack_adjacency")?;
+        pack.set_arg(0, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
+        pack.set_arg(1, &a).map_err(|e| format!("arg adj_out: {e}"))?;
+        self.enqueue_chunked(&pack, n_words, CPPN_DECODE_CHUNK)?;
 
-        let w_out = self.read(&w, d_out * d_in)?;
+        let w_out = self.read(&w, total)?;
         let a_out = self.read(&a, n_bytes)?;
         let act_out = self.read(&act, 1)?;
         Ok((w_out, a_out, act_out[0]))

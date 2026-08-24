@@ -41,6 +41,10 @@ pub struct EvolveParams {
     pub alpha: f32,
     /// τ inicial.
     pub tau0: f32,
+    /// Profesor real: archivo con W0 en f32 plano (d_out*d_in, fila-mayor).
+    pub teacher_w: Option<String>,
+    /// Profesor real: archivo con X de calibración en f32 plano (batch*d_in).
+    pub teacher_x: Option<String>,
 }
 
 impl Default for EvolveParams {
@@ -54,8 +58,22 @@ impl Default for EvolveParams {
             subspace: 120, // 119 coordenadas del genoma + τ
             alpha: 0.3,
             tau0: 0.42,
+            teacher_w: None,
+            teacher_x: None,
         }
     }
+}
+
+/// Lee un archivo de f32 planos (little-endian).
+pub fn read_f32_bin(path: &str) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("leer '{path}': {e}"))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!("'{path}': longitud no múltiplo de 4 (f32)"));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 fn random_vec(len: usize, seed: u64) -> Vec<f32> {
@@ -91,6 +109,31 @@ fn dmatrix(v: &[f32], rows: usize, cols: usize) -> nalgebra::DMatrix<f32> {
     nalgebra::DMatrix::from_row_slice(rows, cols, v)
 }
 
+/// Construye una `Topology` compacta a partir de la salida del kernel GPU
+/// `cppn_decode` (matriz densa enmascarada + bit-tensor). Reemplaza el
+/// `instantiate` CPU (que re-evaluaba la CPPN 885K–201M veces por candidato).
+fn topology_from_dense(
+    w_dense: &[f32],
+    adj: &[u8],
+    d_in: usize,
+    d_out: usize,
+) -> saor_domain::topology::Topology {
+    let mut weights = Vec::new();
+    for i in 0..d_in {
+        for j in 0..d_out {
+            let conn = i * d_out + j;
+            if adj[conn / 8] & (1 << (conn % 8)) != 0 {
+                weights.push(w_dense[j * d_in + i]);
+            }
+        }
+    }
+    saor_domain::topology::Topology {
+        adjacency_bits: adj.to_vec(),
+        total_connections: d_in * d_out,
+        weights,
+    }
+}
+
 /// Un candidato evaluado.
 #[derive(Clone, Copy)]
 pub struct Scored {
@@ -124,14 +167,38 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     let device_name = engine.device_name();
     engine.prepare()?;
 
-    // --- Profesor (H0) y datos de calibración sintéticos ---
+    // --- Profesor (H0) y datos de calibración ---
     let g_base = CppnGenome::random_with(params.seed, 0.5);
     let flat = g_base.flatten();
     let genome_len = flat.len();
-    let x = random_vec(params.batch * params.d_in, params.seed + 1);
-    // Bloque denso del profesor (τ=0).
-    let w0 = instantiate(&g_base, params.d_in, params.d_out, 0.0)
-        .dense_row_major(params.d_in, params.d_out);
+    // Profesor real (archivos f32) o sintético (aleatorio denso).
+    let (x, w0) = match (&params.teacher_w, &params.teacher_x) {
+        (Some(tw), Some(tx)) => {
+            let w0 = read_f32_bin(tw)?;
+            let x = read_f32_bin(tx)?;
+            if w0.len() != params.d_out * params.d_in {
+                return Err(format!(
+                    "teacher_w: esperaba {} f32 (d_out*d_in), hay {}",
+                    params.d_out * params.d_in,
+                    w0.len()
+                ));
+            }
+            if x.len() != params.batch * params.d_in {
+                return Err(format!(
+                    "teacher_x: esperaba {} f32 (batch*d_in), hay {}",
+                    params.batch * params.d_in,
+                    x.len()
+                ));
+            }
+            (x, w0)
+        }
+        _ => {
+            let x = random_vec(params.batch * params.d_in, params.seed + 1);
+            let w0 = instantiate(&g_base, params.d_in, params.d_out, 0.0)
+                .dense_row_major(params.d_in, params.d_out);
+            (x, w0)
+        }
+    };
     let h0 = matmul_t(&x, &w0, params.batch, params.d_in, params.d_out);
     let k0 = engine.gram(&h0, params.d_out, params.batch)?;
     let k0m = dmatrix(&k0, params.batch, params.batch);
@@ -154,9 +221,11 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     for gen in 0..params.generations {
         // Reconstrucción sin estado: población desde la semilla entera.
         let pop = state.spawn_population(&cma_params, params.seed + gen as u64);
+        let t_gen = std::time::Instant::now();
 
         let mut scored: Vec<Scored> = Vec::with_capacity(cma_params.lambda);
         for col in 0..cma_params.lambda {
+            let t_cand = std::time::Instant::now();
             let z = pop.candidates.column(col);
             // Genoma candidato: copia del base + perturbación residual en la cola.
             let mut f = flat.clone();
@@ -164,8 +233,10 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
                 f[tail_start + k] += z[k];
             }
             let tau = sigmoid(z[dim - 1]);
-            let g_cand = CppnGenome::from_flatten(&f);
-            let topo = instantiate(&g_cand, params.d_in, params.d_out, tau);
+            // Decodificación GPU (reemplaza el instantiate CPU por candidato).
+            let (w_dense, adj, _active) =
+                engine.cppn_decode(&f, params.d_in, params.d_out, tau)?;
+            let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
             let (rp, ci, vals) = topo.to_csr(params.d_in, params.d_out);
             let h1 = engine.spmm_csr(&x, &rp, &ci, &vals, params.d_in, params.d_out)?;
             let k1 = engine.gram(&h1, params.d_out, params.batch)?;
@@ -180,6 +251,10 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
                 sparsity,
                 tau,
             });
+            eprintln!(
+                "[evolve] gen {gen} cand {col} t={:.2}s cka={cka:.3} sp={sparsity:.3}",
+                t_cand.elapsed().as_secs_f32()
+            );
         }
 
         // Selección élite (maximizar fitness) y actualización CMA-ES.
@@ -210,6 +285,16 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
             "mean_fitness": mean_fitness,
             "best_so_far": best_so_far,
         }));
+        eprintln!(
+            "[evolve] gen {}/{} best_fit={:.4} cka={:.4} sp={:.4} mean={:.4} (gen {:.1}s)",
+            gen + 1,
+            params.generations,
+            gen_best.fitness,
+            gen_best.cka,
+            gen_best.sparsity,
+            mean_fitness,
+            t_gen.elapsed().as_secs_f32()
+        );
     }
 
     let best = best_scored.ok_or("sin candidatos evaluados")?;
@@ -254,6 +339,24 @@ pub fn cmd(args: &[String]) -> ExitCode {
                     params.generations = v;
                 }
             }
+            "--d-in" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_in = v;
+                }
+            }
+            "--d-out" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_out = v;
+                }
+            }
+            "--batch" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.batch = v;
+                }
+            }
             "--subspace" => {
                 i += 1;
                 if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
@@ -265,6 +368,14 @@ pub fn cmd(args: &[String]) -> ExitCode {
                 if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
                     params.seed = v;
                 }
+            }
+            "--teacher-w" => {
+                i += 1;
+                params.teacher_w = args.get(i).cloned();
+            }
+            "--teacher-x" => {
+                i += 1;
+                params.teacher_x = args.get(i).cloned();
             }
             "--out" => {
                 i += 1;

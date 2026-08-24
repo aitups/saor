@@ -107,6 +107,34 @@
   attention + MTP + multimodal). GGUF Q4_K_M:
   `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf` (~16 GB).
 - Descarga a `models/` (script `python/scripts/download_models.py`).
+- **Auditoría real:** ALIA-40b = 48 capas, bloques FFN `[8192, 24576]` (Q4_K);
+  Qwen3.8-27B = 65 bloques FFN `[5120, 17408]` (IQ4_XS) + 336 tensores SSM.
+
+## D13 — Escalado del decode CPPN y fixes críticos (Fase 7)
+- **Bug de eventos (`enqueue_chunked`):** `opencl3` libera el `cl_event` en el
+  `Drop`; esperar sobre un evento liberado en el siguiente dispatch colgaba el
+  kernel (multi-dispatch >1). Fix: mantener los `Event` vivos en un `Vec`.
+- **Presión de registros de la CPPN:** con 64+64 ocultos el evaluador forzaba
+  spilling y el decode colapsaba (~6500× por dispatch en bloques grandes).
+  **`HIDDEN = 16+16`** (Rust/Python/kernel) reduce registros 4× y flops 16×.
+- **Decode por conexión + `atomic_or` (u32) + `pack_adjacency`:** máximo
+  paralelismo (1 work-item por conexión) sin carreras en el bit-tensor.
+- **Resultado:** 885K conexiones ≈ 10 ms; 8.4M ≈ 36 ms. Proyección real:
+  Qwen (89M) ≈ 0.4 s/decode, ALIA (201M) ≈ 0.9 s/decode.
+- **`evolve` usa el decode GPU** (no `instantiate` CPU por candidato):
+  0.07–0.12 s/candidato a 576×1536.
+
+## D14 — Piloto de bloque real (Fase 7)
+- `python/scripts/pilot_block.py`: profesor real (tensor FFN de SmolLM2-135M vía
+  `hayai dump_tensor_f32`) → evolución (decode GPU) → consolidación GGUF
+  disperso → `hayai plan` + `load_saor_sparse` OK.
+- Resultado: bloque `[576,1536]`, `d_arch=0.991`, `spmm_csr == spmm_dense`
+  (max_err 0). Fases 5/6 a nivel de bloque cerradas con modelo real.
+- **Hallazgo de investigación:** el CKA del mejor candidato (~0.13) es bajo:
+  la CPPN aleatoria no reconstruye un FFN entrenado a alta esparcidad en 8
+  generaciones con subespacio 120 — señal de que la inicialización del genoma
+  (no aleatoria) y/o más generaciones son necesarias para fidelidad real.
+
 
 
 ## Notas externas

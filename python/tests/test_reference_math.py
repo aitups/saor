@@ -10,6 +10,7 @@ from saor_orchestrator.reference.arch_distance import (
 from saor_orchestrator.reference.cka import centered_cka, gram_matrix
 from saor_orchestrator.reference.cppn import (
     CPPN_INPUT_DIM,
+    HIDDEN,
     CppnGenome,
     input_vector,
 )
@@ -38,7 +39,10 @@ def test_evaluacion_determinista_y_l_en_rango():
 
 
 def test_tamano_genoma():
-    assert CppnGenome().param_count == 8 * 64 + 64 * 64 + 64 * 2 + 64 + 64 + 2
+    assert (
+        CppnGenome().param_count
+        == 8 * HIDDEN + HIDDEN * HIDDEN + HIDDEN * 2 + HIDDEN + HIDDEN + 2
+    )
 
 
 def test_tau_extremo_vacia_o_llena():

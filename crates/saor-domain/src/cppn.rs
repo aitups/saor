@@ -92,8 +92,13 @@ pub struct CppnGenome {
 }
 
 impl CppnGenome {
-    /// Dimensiones internas fijas de la CPPN.
-    pub const HIDDEN: usize = 64;
+/// Dimensiones internas fijas de la CPPN.
+///
+/// 16+16 ocultos: equilibrio entre expresividad y rendimiento del kernel OpenCL
+/// de decodificación (presión de registros). A 64+64 el evaluador forzaba
+/// spilling y el decode colapsaba (~6500× más lento por dispatch en bloques
+/// grandes). Para 89M–201M conexiones de los modelos objetivo es determinante.
+pub const HIDDEN: usize = 16;
 
     /// Crea un genoma vacío (ceros) listo para inicializar.
     pub fn zeros() -> Self {
@@ -267,7 +272,15 @@ mod tests {
     #[test]
     fn tamano_genoma_es_orden_32k() {
         let genome = CppnGenome::zeros();
-        assert_eq!(genome.param_count(), 8 * 64 + 64 * 64 + 64 * 2 + 64 + 64 + 2);
+        assert_eq!(
+            genome.param_count(),
+            8 * CppnGenome::HIDDEN
+                + CppnGenome::HIDDEN * CppnGenome::HIDDEN
+                + CppnGenome::HIDDEN * 2
+                + CppnGenome::HIDDEN
+                + CppnGenome::HIDDEN
+                + 2
+        );
     }
 
     #[test]

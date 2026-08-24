@@ -12,7 +12,10 @@ from typing import Sequence
 import numpy as np
 
 CPPN_INPUT_DIM = 8
-HIDDEN = 64
+# 16+16 ocultos (alineado con saor_domain::cppn y el kernel OpenCL): reduce la
+# presión de registros del decodificador y permite escalar a bloques reales
+# (89M–201M conexiones).
+HIDDEN = 16
 GENOME_SIZE = 32 * 1024
 
 

@@ -5,6 +5,9 @@ Cargo.lock.orig
 # Artefactos locales generados (import lib de OpenCL, etc.)
 /.local/
 
+# Modelos GGUF descargados (Fase 7.0) — 38 GB, no versionables
+/models/
+
 # Python
 __pycache__/
 *.py[cod]

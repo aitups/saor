@@ -24,11 +24,37 @@ pub fn cmd(args: &[String]) -> ExitCode {
                     params.generations = v;
                 }
             }
+            "--d-in" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_in = v;
+                }
+            }
+            "--d-out" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_out = v;
+                }
+            }
+            "--batch" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.batch = v;
+                }
+            }
             "--seed" => {
                 i += 1;
                 if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
                     params.seed = v;
                 }
+            }
+            "--teacher-w" => {
+                i += 1;
+                params.teacher_w = args.get(i).cloned();
+            }
+            "--teacher-x" => {
+                i += 1;
+                params.teacher_x = args.get(i).cloned();
             }
             "--out-gguf" => {
                 i += 1;
