@@ -232,6 +232,28 @@
     (61.6M/201M activos). `consolidate` + `embed` en el GGUF completo:
     `verified:[true]`, 24.47 GB conservados + 272 MB dispersos.
 
+## D18 — Fase 3: FFN disperso ejecutado por hayai + harness KL (bug de layout en make-block)
+- **hayai**: `load_embedded_block` (formato embebido D16 por bloque) +
+  `CsrSparse` en `LayerWeights` con fallback denso/disperso en el loader +
+  ejecución CSR (`spmm_csr_cpu`) en `Generator::forward` para gate/up/down
+  sustituidos. `hayai generate --dev-mmap` ejecuta el modelo embebido.
+- **Harness KL:** ejemplo `dump_logits` (logits teacher-forced por prompt) +
+  `gate_equiv` (diagnóstico gemv/csr/dequant).
+- **Bug de layout en `make-block`:** escribía los pesos del dump `[d_out,d_in]`
+  fila-mayor, pero `SparseBlock` exige el orden i-mayor (conn=i*d_out+j). El
+  diagnóstico `gate_equiv` lo expuso (|gemv−deq|=4e-6, |deq−csr|=11.6). Fix:
+  `--dense-dump` reordena. Los bloques de `consolidate` ya estaban en i-mayor.
+- **Validación a nivel de modelo (SmolLM2):**
+  - Bloque denso embebido (copia del profesor): **KL simétrica = 0.000000**,
+    max|logits|=8.8e-5, top-1 agreement 100% → el path CSR es **correcto**.
+  - Bloque disperso real (gate blk.0, 43% activo, calibrado con X aleatorio):
+    **KL = 1.61** — degradación esperada: la esparsificación necesita **hooks de
+    activación reales (Fase 2)** para caer las conexiones correctas.
+- Pendiente Fase 3: `StreamingGenerator` (path por defecto del CLI) aún no
+  enruta el FFN disperso ("tensor not found: blk.N.ffn_gate.weight"); se usa
+  `--dev-mmap` (`Generator`). Qwen (attn_qkv fusionado) requiere soporte de
+  arquitectura adicional en `LlamaWeights`.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
