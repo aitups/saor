@@ -6,6 +6,7 @@
 
 #![deny(missing_docs)]
 
+pub mod compute;
 pub mod context;
 
 /// Re-export del crate subyacente para conveniencia.

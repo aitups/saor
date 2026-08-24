@@ -85,7 +85,6 @@ enum MetaValue {
     U64(u64),
     F32(f32),
     Bool(bool),
-    String(String),
     F32Array(Vec<f32>),
 }
 
@@ -109,10 +108,6 @@ fn write_kv(buf: &mut Vec<u8>, key: &str, val: &MetaValue) {
         MetaValue::Bool(v) => {
             buf.extend_from_slice(&GGUF_TYPE_BOOL.to_le_bytes());
             buf.push(*v as u8);
-        }
-        MetaValue::String(s) => {
-            buf.extend_from_slice(&GGUF_TYPE_STRING.to_le_bytes());
-            write_string(buf, s);
         }
         MetaValue::F32Array(v) => {
             buf.extend_from_slice(&GGUF_TYPE_ARRAY.to_le_bytes());

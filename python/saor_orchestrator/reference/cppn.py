@@ -86,6 +86,53 @@ class CppnGenome:
             + self.b2.size
         )
 
+    @classmethod
+    def from_flatten(cls, flat: np.ndarray) -> "CppnGenome":
+        """Reconstruye el genoma desde el aplanado fila-mayor del kernel OpenCL.
+
+        Orden: `w0 | b0 | w1 | b1 | w2 | b2` (espejo de
+        `saor_domain::cppn::CppnGenome::from_flatten`).
+        """
+        g = cls()
+        flat = np.asarray(flat, np.float32)
+        pos = 0
+        for o in range(HIDDEN):
+            for k in range(CPPN_INPUT_DIM):
+                g.w0[o, k] = flat[pos]
+                pos += 1
+        for o in range(HIDDEN):
+            g.b0[o, 0] = flat[pos]
+            pos += 1
+        for o in range(HIDDEN):
+            for k in range(HIDDEN):
+                g.w1[o, k] = flat[pos]
+                pos += 1
+        for o in range(HIDDEN):
+            g.b1[o, 0] = flat[pos]
+            pos += 1
+        for r in range(2):
+            for k in range(HIDDEN):
+                g.w2[r, k] = flat[pos]
+                pos += 1
+        g.b2[0, 0] = flat[pos]
+        pos += 1
+        g.b2[1, 0] = flat[pos]
+        pos += 1
+        assert pos == len(flat), "aplanado de longitud incorrecta"
+        return g
+
+    def flatten(self) -> np.ndarray:
+        """Aplana el genoma en el orden del kernel OpenCL (fila-mayor)."""
+        parts = [
+            self.w0,
+            self.b0,
+            self.w1,
+            self.b1,
+            self.w2,
+            self.b2,
+        ]
+        return np.concatenate([p.reshape(-1, order="C").astype(np.float32) for p in parts])
+
     def evaluate(self, v: np.ndarray) -> tuple[float, float]:
         """Evalúa la CPPN para un par de neuronas. Devuelve `(w_ij, l_ij)`."""
         v = np.asarray(v, dtype=np.float32)

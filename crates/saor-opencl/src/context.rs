@@ -5,7 +5,7 @@
 //! memoria del motor de streaming (~2 GB) y la mitigación WDDM/TDR.
 
 use opencl3::device::{Device, CL_DEVICE_TYPE_ALL, CL_DEVICE_TYPE_CPU, CL_DEVICE_TYPE_GPU};
-use opencl3::platform::get_platforms;
+use opencl3::platform::{get_platforms, Platform};
 
 /// Información resumida de un dispositivo OpenCL.
 #[derive(Debug, Clone)]
@@ -84,6 +84,37 @@ pub fn first_gpu() -> Result<DeviceInfo, String> {
         .into_iter()
         .find(|d| d.device_type == "GPU")
         .ok_or_else(|| "no se encontró ninguna GPU OpenCL".to_string())
+}
+
+/// Devuelve la plataforma y el `Device` de la primera GPU, prefiriendo NVIDIA
+/// cuando hay varias (la máquina también expone la iGPU Intel).
+pub fn first_gpu_device() -> Result<(Platform, Device), String> {
+    let platforms = get_platforms().map_err(|e| format!("get_platforms: {e}"))?;
+    for platform in &platforms {
+        let device_ids = platform
+            .get_devices(CL_DEVICE_TYPE_GPU)
+            .map_err(|e| format!("get_devices: {e}"))?;
+        let mut nvidia: Option<Device> = None;
+        let mut first: Option<Device> = None;
+        for id in device_ids {
+            let device = Device::new(id);
+            let vendor = device.vendor().unwrap_or_default();
+            if vendor.to_ascii_lowercase().contains("nvidia") {
+                nvidia = Some(device);
+                break;
+            }
+            if first.is_none() {
+                first = Some(device);
+            }
+        }
+        if let Some(d) = nvidia {
+            return Ok((platform.clone(), d));
+        }
+        if let Some(d) = first {
+            return Ok((platform.clone(), d));
+        }
+    }
+    Err("no se encontró ninguna GPU OpenCL".to_string())
 }
 
 /// Imprime un resumen legible de los dispositivos.

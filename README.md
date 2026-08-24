@@ -63,7 +63,7 @@ cd python
 | 0 — Fundación y toolchain | ✅ completada (workspace, MSVC/CMake, OpenCL.lib, `device-info`, smoke tests) |
 | 1 — Referencia NumPy | ✅ completada (cppn, topology, cka, cmaes, reconciler, arch_distance + 14 tests) |
 | 2 — Núcleo Rust (streaming/memoria) | ✅ completada (PinnedMemoryAllocator, cuantización 4-bit, doble buffer con prefetch, GGUF disperso + 12 tests) |
-| 3 — Kernels OpenCL 3.0 | ⏳ siguiente |
-| 4 — Loop evolutivo integrado | ⏳ |
+| 3 — Kernels OpenCL 3.0 | ✅ completada (cppn_decode, spmm_dense/csr, gram + `validate_opencl.py`; err < 1e-6 en RTX 4050) |
+| 4 — Loop evolutivo integrado | ⏳ siguiente |
 | 5 — Hooks del modelo real | ⏳ |
 | 6 — Cierre (contrato de Fase 2) | ⏳ |

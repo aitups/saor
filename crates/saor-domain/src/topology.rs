@@ -5,6 +5,7 @@
 //! empaqueta como bits para el GGUF disperso y para `D_arch` (popcount).
 
 use crate::cppn::CppnGenome;
+use nalgebra::DMatrix;
 
 /// Matriz de adyacencia + pesos del DAG instanciado.
 #[derive(Debug, Clone)]
@@ -31,6 +32,82 @@ impl Topology {
     pub fn sparsity(&self) -> f32 {
         debug_assert!(self.total_connections > 0);
         1.0 - (self.active_connections() as f32 / self.total_connections as f32)
+    }
+
+    /// Matriz densa enmascarada `[d_out x d_in]` (solo para referencia/validación;
+    /// en producción el DAG se consume como CSR vía SpMM en OpenCL).
+    pub fn dense_matrix(&self, d_in: usize, d_out: usize) -> DMatrix<f32> {
+        let mut m = DMatrix::<f32>::zeros(d_out, d_in);
+        let mut w_idx = 0;
+        for i in 0..d_in {
+            for j in 0..d_out {
+                let conn = i * d_out + j;
+                if conn < self.total_connections
+                    && self.adjacency_bits[conn / 8] & (1 << (conn % 8)) != 0
+                {
+                    m[(j, i)] = self.weights[w_idx];
+                    w_idx += 1;
+                }
+            }
+        }
+        m
+    }
+
+    /// Versión fila-mayor `[j * d_in + i]` (mismo orden que el kernel OpenCL).
+    pub fn dense_row_major(&self, d_in: usize, d_out: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; d_in * d_out];
+        let mut w_idx = 0;
+        for i in 0..d_in {
+            for j in 0..d_out {
+                let conn = i * d_out + j;
+                if conn < self.total_connections
+                    && self.adjacency_bits[conn / 8] & (1 << (conn % 8)) != 0
+                {
+                    out[j * d_in + i] = self.weights[w_idx];
+                    w_idx += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Construye el CSR `(row_ptr, col_idx, vals)` del DAG (filas = salidas `j`).
+    ///
+    /// Los pesos de `self.weights` están en el orden i-mayor de `instantiate`
+    /// (conexión `conn = i*d_out + j`); se mapea `conn -> peso` para iterar en
+    /// orden j-mayor sin desordenar los valores.
+    pub fn to_csr(&self, d_in: usize, d_out: usize) -> (Vec<i32>, Vec<i32>, Vec<f32>) {
+        let mut weight_by_conn = vec![0.0f32; self.total_connections];
+        let mut w_idx = 0usize;
+        for i in 0..d_in {
+            for j in 0..d_out {
+                let conn = i * d_out + j;
+                if conn < self.total_connections
+                    && self.adjacency_bits[conn / 8] & (1 << (conn % 8)) != 0
+                {
+                    weight_by_conn[conn] = self.weights[w_idx];
+                    w_idx += 1;
+                }
+            }
+        }
+        debug_assert_eq!(w_idx, self.weights.len());
+
+        let mut row_ptr = vec![0i32; d_out + 1];
+        let mut col_idx = Vec::with_capacity(self.active_connections());
+        let mut vals = Vec::with_capacity(self.active_connections());
+        for j in 0..d_out {
+            for i in 0..d_in {
+                let conn = i * d_out + j;
+                if conn < self.total_connections
+                    && self.adjacency_bits[conn / 8] & (1 << (conn % 8)) != 0
+                {
+                    col_idx.push(i as i32);
+                    vals.push(weight_by_conn[conn]);
+                }
+            }
+            row_ptr[j + 1] = col_idx.len() as i32;
+        }
+        (row_ptr, col_idx, vals)
     }
 }
 
@@ -87,5 +164,26 @@ mod tests {
         // Con l = 0.5 fijo, tau justo por encima deja todo inactivo -> dist = 1.
         let t = instantiate(&genome, 16, 16, 0.51);
         assert!(t.sparsity() >= 0.4, "D_arch debe superar el contrato de 0.4");
+    }
+
+    #[test]
+    fn csr_preserva_pesos_y_columnas() {
+        // Genoma con salidas l controladas para un patrón conocido: usamos un
+        // genoma de ceros con tau=0.0 (todo activo) y verificamos el mapeo
+        // i-mayor de instantiate frente al CSR j-mayor.
+        let genome = CppnGenome::zeros();
+        let t = instantiate(&genome, 4, 3, 0.0);
+        assert_eq!(t.active_connections(), 12);
+        let (row_ptr, col_idx, vals) = t.to_csr(4, 3);
+        // row j -> columnas i (0..d_in), y vals = weights[conn] con
+        // conn = i*d_out + j en el orden de instantiate.
+        for j in 0..3usize {
+            assert_eq!((row_ptr[j + 1] - row_ptr[j]) as usize, 4);
+            for k in row_ptr[j] as usize..row_ptr[j + 1] as usize {
+                let i = col_idx[k] as usize;
+                let conn = i * 3 + j;
+                assert_eq!(vals[k], t.weights[conn]);
+            }
+        }
     }
 }

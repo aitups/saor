@@ -53,3 +53,17 @@ def instantiate(genome: CppnGenome, d_in: int, d_out: int, tau: float) -> Topolo
                 bits[idx // 8] |= np.uint8(1 << (idx % 8))
                 weights.append(w)
     return Topology(bits, total, weights)
+
+
+def dense_row_major(topo: Topology, d_in: int, d_out: int) -> np.ndarray:
+    """Matriz densa enmascarada `[d_out x d_in]` en orden fila-mayor
+    (`[j * d_in + i]`), espejo de `saor_domain::topology::dense_row_major`."""
+    out = np.zeros((d_out, d_in), np.float32)
+    w_idx = 0
+    for i in range(d_in):
+        for j in range(d_out):
+            conn = i * d_out + j
+            if int(topo.adjacency_bits[conn // 8]) & (1 << (conn % 8)):
+                out[j, i] = topo.weights[w_idx]
+                w_idx += 1
+    return out

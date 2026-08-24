@@ -282,6 +282,9 @@ dependencies = [
 name = "saor-engine"
 version = "0.1.0"
 dependencies = [
+ "nalgebra",
+ "rand_chacha",
+ "rand_core",
  "saor-domain",
  "saor-opencl",
  "saor-streamer",

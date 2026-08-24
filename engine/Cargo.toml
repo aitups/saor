@@ -13,5 +13,8 @@ path = "src/main.rs"
 saor-domain = { path = "../crates/saor-domain" }
 saor-opencl = { path = "../crates/saor-opencl" }
 saor-streamer = { path = "../crates/saor-streamer" }
+nalgebra.workspace = true
+rand_chacha.workspace = true
+rand_core = "0.6"
 serde.workspace = true
 serde_json.workspace = true

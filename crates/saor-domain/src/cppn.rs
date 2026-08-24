@@ -147,6 +147,98 @@ impl CppnGenome {
         let l_sig = 1.0 / (1.0 + (-l).exp());
         (w, l_sig)
     }
+
+    /// Aplana el genoma en el orden usado por el kernel OpenCL:
+    /// `w0 | b0 | w1 | b1 | w2 | b2` (véase `kernels/cppn_decode.cl`).
+    ///
+    /// IMPORTANTE: `nalgebra` almacena `DMatrix` por columnas, por lo que
+    /// `iter()` no sirve aquí; se itera explícitamente en orden fila-mayor para
+    /// que el índice coincida con `genome[o * cols + k]` del kernel.
+    pub fn flatten(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.param_count());
+        for o in 0..Self::HIDDEN {
+            for k in 0..CPPN_INPUT_DIM {
+                out.push(self.w0[(o, k)]);
+            }
+        }
+        for o in 0..Self::HIDDEN {
+            out.push(self.b0[(o, 0)]);
+        }
+        for o in 0..Self::HIDDEN {
+            for k in 0..Self::HIDDEN {
+                out.push(self.w1[(o, k)]);
+            }
+        }
+        for o in 0..Self::HIDDEN {
+            out.push(self.b1[(o, 0)]);
+        }
+        for r in 0..2 {
+            for k in 0..Self::HIDDEN {
+                out.push(self.w2[(r, k)]);
+            }
+        }
+        out.push(self.b2[(0, 0)]);
+        out.push(self.b2[(1, 0)]);
+        out
+    }
+
+    /// Reconstruye el genoma desde un aplanado producido por [`Self::flatten`].
+    pub fn from_flatten(flat: &[f32]) -> Self {
+        let mut g = Self::zeros();
+        let mut pos = 0;
+        for o in 0..Self::HIDDEN {
+            for k in 0..CPPN_INPUT_DIM {
+                g.w0[(o, k)] = flat[pos];
+                pos += 1;
+            }
+        }
+        for o in 0..Self::HIDDEN {
+            g.b0[(o, 0)] = flat[pos];
+            pos += 1;
+        }
+        for o in 0..Self::HIDDEN {
+            for k in 0..Self::HIDDEN {
+                g.w1[(o, k)] = flat[pos];
+                pos += 1;
+            }
+        }
+        for o in 0..Self::HIDDEN {
+            g.b1[(o, 0)] = flat[pos];
+            pos += 1;
+        }
+        for r in 0..2 {
+            for k in 0..Self::HIDDEN {
+                g.w2[(r, k)] = flat[pos];
+                pos += 1;
+            }
+        }
+        g.b2[(0, 0)] = flat[pos];
+        pos += 1;
+        g.b2[(1, 0)] = flat[pos];
+        pos += 1;
+        debug_assert_eq!(pos, flat.len());
+        g
+    }
+
+    /// Genoma aleatorio determinista (semilla entera), pesos en `[-scale, scale]`.
+    pub fn random_with(seed: u64, scale: f32) -> Self {
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::{RngCore, SeedableRng};
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut fill = |m: &mut DMatrix<f32>| {
+            for v in m.iter_mut() {
+                *v = (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 2.0 * scale;
+            }
+        };
+        let mut g = Self::zeros();
+        fill(&mut g.w0);
+        fill(&mut g.b0);
+        fill(&mut g.w1);
+        fill(&mut g.b1);
+        fill(&mut g.w2);
+        fill(&mut g.b2);
+        g
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +268,24 @@ mod tests {
     fn tamano_genoma_es_orden_32k() {
         let genome = CppnGenome::zeros();
         assert_eq!(genome.param_count(), 8 * 64 + 64 * 64 + 64 * 2 + 64 + 64 + 2);
+    }
+
+    #[test]
+    fn flatten_round_trip() {
+        let g = CppnGenome::random_with(1234, 0.5);
+        let flat = g.flatten();
+        assert_eq!(flat.len(), g.param_count());
+        let g2 = CppnGenome::from_flatten(&flat);
+        // Comparación elemento a elemento (todas las matrices).
+        for o in 0..CppnGenome::HIDDEN {
+            for k in 0..CPPN_INPUT_DIM {
+                assert_eq!(g.w0[(o, k)], g2.w0[(o, k)]);
+            }
+        }
+        assert_eq!(g.b0, g2.b0);
+        assert_eq!(g.w1, g2.w1);
+        assert_eq!(g.b1, g2.b1);
+        assert_eq!(g.w2, g2.w2);
+        assert_eq!(g.b2, g2.b2);
     }
 }
