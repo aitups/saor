@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
+mod consolidate;
 mod evolve;
 mod kernels_run;
 
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
         Some("device-info") => cmd_device_info(),
         Some("kernels-run") => kernels_run::cmd(&args[2..]),
         Some("evolve") => evolve::cmd(&args[2..]),
+        Some("consolidate") => consolidate::cmd(&args[2..]),
         Some("version") => {
             println!(
                 "saor-engine {} (domain {}, streamer {}, opencl)",
@@ -44,11 +46,11 @@ fn main() -> ExitCode {
         }
         Some(other) => {
             eprintln!("saor-engine: comando desconocido '{other}'");
-            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|version>");
+            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|consolidate|version>");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|version>");
+            eprintln!("uso: saor-engine <device-info|kernels-run|evolve|consolidate|version>");
             ExitCode::from(2)
         }
     }

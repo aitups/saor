@@ -93,16 +93,33 @@ fn dmatrix(v: &[f32], rows: usize, cols: usize) -> nalgebra::DMatrix<f32> {
 
 /// Un candidato evaluado.
 #[derive(Clone, Copy)]
-struct Scored {
-    col: usize,
-    fitness: f32,
-    cka: f32,
-    sparsity: f32,
-    tau: f32,
+pub struct Scored {
+    /// Índice en la población.
+    pub col: usize,
+    /// Fitness `CKA + α * sparsity`.
+    pub fitness: f32,
+    /// CKA contra el profesor.
+    pub cka: f32,
+    /// Esparcidad `D_arch`.
+    pub sparsity: f32,
+    /// Umbral τ del candidato.
+    pub tau: f32,
+}
+
+/// Resultado de una corrida evolutiva (reporte + mejor candidato).
+pub struct EvolveOutcome {
+    /// Reporte JSON completo.
+    pub report: serde_json::Value,
+    /// Genoma aplanado del mejor candidato.
+    pub best_flat: Vec<f32>,
+    /// τ del mejor candidato.
+    pub best_tau: f32,
+    /// Métricas del mejor candidato.
+    pub best: Scored,
 }
 
 /// Ejecuta el loop evolutivo y devuelve el reporte JSON.
-pub fn run(params: &EvolveParams) -> Result<serde_json::Value, String> {
+pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     let mut engine = ClEngine::init()?;
     let device_name = engine.device_name();
     engine.prepare()?;
@@ -132,6 +149,7 @@ pub fn run(params: &EvolveParams) -> Result<serde_json::Value, String> {
     let mut history: Vec<serde_json::Value> = Vec::new();
     let mut best_so_far = f32::NEG_INFINITY;
     let mut best_scored: Option<Scored> = None;
+    let mut best_flat: Option<Vec<f32>> = None;
 
     for gen in 0..params.generations {
         // Reconstrucción sin estado: población desde la semilla entera.
@@ -173,6 +191,13 @@ pub fn run(params: &EvolveParams) -> Result<serde_json::Value, String> {
         if gen_best.fitness > best_so_far {
             best_so_far = gen_best.fitness;
             best_scored = Some(gen_best);
+            // Guardar el genoma del mejor candidato de la generación.
+            let z = pop.candidates.column(gen_best.col);
+            let mut f = flat.clone();
+            for k in 0..(dim - 1) {
+                f[tail_start + k] += z[k];
+            }
+            best_flat = Some(f);
         }
         let mean_fitness =
             scored.iter().map(|s| s.fitness as f64).sum::<f64>() / scored.len() as f64;
@@ -188,9 +213,10 @@ pub fn run(params: &EvolveParams) -> Result<serde_json::Value, String> {
     }
 
     let best = best_scored.ok_or("sin candidatos evaluados")?;
+    let best_flat = best_flat.ok_or("sin genoma del mejor candidato")?;
     let ok = best.fitness.is_finite() && best.cka.is_finite() && best.cka >= 0.0;
 
-    Ok(json!({
+    let report = json!({
         "ok": ok,
         "device": device_name,
         "params": {
@@ -206,7 +232,13 @@ pub fn run(params: &EvolveParams) -> Result<serde_json::Value, String> {
             "best_so_far": best_so_far,
         },
         "history": history,
-    }))
+    });
+    Ok(EvolveOutcome {
+        report,
+        best_flat,
+        best_tau: best.tau,
+        best,
+    })
 }
 
 /// Maneja `saor-engine evolve [--gens N] [--subspace N] [--seed N] [--out <path>]`.
@@ -247,19 +279,19 @@ pub fn cmd(args: &[String]) -> ExitCode {
     }
 
     match run(&params) {
-        Ok(report) => {
+        Ok(outcome) => {
             if let Some(path) = out_path {
                 if let Err(e) = std::fs::write(
                     &path,
-                    serde_json::to_string_pretty(&report).expect("json"),
+                    serde_json::to_string_pretty(&outcome.report).expect("json"),
                 ) {
                     eprintln!("evolve: no se pudo escribir '{path}': {e}");
                     return ExitCode::FAILURE;
                 }
                 println!("reporte escrito en {path}");
             }
-            println!("{}", serde_json::to_string(&report).expect("json"));
-            if report["ok"].as_bool().unwrap_or(false) {
+            println!("{}", serde_json::to_string(&outcome.report).expect("json"));
+            if outcome.report["ok"].as_bool().unwrap_or(false) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

@@ -56,7 +56,12 @@
 ## D8 — Runtime de hooks (Fase 5)
 - **Decisión preliminar:** `llama-cpp-python`/ggml para capturar activaciones del
   modelo profesor de 30B (carga secuencial capa a capa, nativo GGUF).
-- **Estado:** a confirmar al llegar a la Fase 5.
+- **Estado:** la infraestructura (auditoría GGUF, catálogo de roles, lote B=128,
+  varianza de Fisher, abstracción `TeacherRuntime`) está implementada y
+  testeada con el backend sintético. La captura real requiere: (a) el archivo
+  GGUF del modelo base (~30B) y (b) un runtime con hooks de capa intermedia
+  (`llama-cpp-python` con build adecuada o `hayai` — PR paralela). **Pendiente
+  de la disponibilidad del modelo.**
 
 ## D9 — Restricciones del driver OpenCL (RTX 4050, driver 560.94)
 - **OpenCL C = 1.2** es el lenguaje máximo reportado por el driver NVIDIA (el

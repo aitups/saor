@@ -1,0 +1,93 @@
+//! Subcomando `consolidate`: consolida el mejor candidato evolucionado en un
+//! **GGUF disperso** (sin densificar, decisión D4 — bit-tensor
+//! `ffn_dag_adjacency` + pesos activos) y reporta el contrato de Fase 2
+//! (D_arch, fidelidad CKA, no-dormancia estructural).
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use saor_domain::cppn::CppnGenome;
+use saor_domain::topology::instantiate;
+use saor_streamer::gguf_sparse::{write_sparse_gguf, SparseBlock};
+use serde_json::json;
+
+/// Maneja `saor-engine consolidate --out-gguf <ruta> [--gens N] [--seed N]`.
+pub fn cmd(args: &[String]) -> ExitCode {
+    let mut params = crate::evolve::EvolveParams::default();
+    let mut out_gguf: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--gens" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.generations = v;
+                }
+            }
+            "--seed" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.seed = v;
+                }
+            }
+            "--out-gguf" => {
+                i += 1;
+                out_gguf = args.get(i).cloned();
+            }
+            other => {
+                eprintln!("consolidate: argumento desconocido '{other}'");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+
+    let path = match out_gguf {
+        Some(p) => PathBuf::from(p),
+        None => {
+            eprintln!("consolidate: falta --out-gguf <ruta>");
+            return ExitCode::from(2);
+        }
+    };
+
+    match crate::evolve::run(&params) {
+        Ok(outcome) => {
+            let genome = CppnGenome::from_flatten(&outcome.best_flat);
+            let topo = instantiate(&genome, params.d_in, params.d_out, outcome.best_tau);
+            let active_connections = topo.active_connections();
+            let d_arch = topo.sparsity(); // contrato: >= 0.4
+            let block = SparseBlock {
+                d_in: params.d_in,
+                d_out: params.d_out,
+                tau: outcome.best_tau,
+                genome: outcome.best_flat,
+                adjacency: topo.adjacency_bits,
+                weights: topo.weights,
+            };
+            if let Err(e) = write_sparse_gguf(&path, &block) {
+                eprintln!("consolidate: no se pudo escribir el GGUF: {e}");
+                return ExitCode::FAILURE;
+            }
+            let file_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+            let report = json!({
+                "ok": true,
+                "gguf": path.display().to_string(),
+                "gguf_bytes": file_bytes,
+                "d_in": params.d_in,
+                "d_out": params.d_out,
+                "tau": outcome.best_tau,
+                "active_connections": active_connections,
+                "d_arch": d_arch,
+                "best_cka": outcome.best.cka,        // fidelidad funcional
+                "best_fitness": outcome.best.fitness,
+            });
+            println!("{}", serde_json::to_string_pretty(&report).expect("json"));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("consolidate: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
