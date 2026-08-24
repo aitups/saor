@@ -11,6 +11,7 @@
 //!   perturbaciones entre generaciones.
 //! * **Fitness:** `CKA(H0, H1) + α * Sparsity(A1)` con el profesor `H0` fijo.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nalgebra::DVector;
@@ -45,6 +46,15 @@ pub struct EvolveParams {
     pub teacher_w: Option<String>,
     /// Profesor real: archivo con X de calibración en f32 plano (batch*d_in).
     pub teacher_x: Option<String>,
+    /// Modo warm-start por copia: los pesos activos del candidato provienen del
+    /// profesor (gen 0 denso -> CKA~1.0), el genoma solo controla la topología
+    /// (l_ij, τ). Medido: CKA >= 0.85 hasta ~99% de esparcidad en FFNs reales,
+    /// mientras la regresión CPPN (Método A/B) queda en ~0.15 (D15).
+    pub teacher_copy: bool,
+    /// Genoma base de arranque (`--warm genome.bin`): reemplaza el aleatorio.
+    /// El subespacio activo (cola del genoma) perturba residualmente alrededor
+    /// de la semilla.
+    pub warm_genome: Option<PathBuf>,
 }
 
 impl Default for EvolveParams {
@@ -60,6 +70,8 @@ impl Default for EvolveParams {
             tau0: 0.42,
             teacher_w: None,
             teacher_x: None,
+            teacher_copy: false,
+            warm_genome: None,
         }
     }
 }
@@ -135,7 +147,7 @@ fn topology_from_dense(
 }
 
 /// Un candidato evaluado.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Scored {
     /// Índice en la población.
     pub col: usize,
@@ -147,6 +159,10 @@ pub struct Scored {
     pub sparsity: f32,
     /// Umbral τ del candidato.
     pub tau: f32,
+    /// Bit-tensor `ffn_dag_adjacency` del candidato (para consolidar).
+    pub adjacency: Vec<u8>,
+    /// Pesos activos compactos del candidato (para consolidar).
+    pub weights: Vec<f32>,
 }
 
 /// Resultado de una corrida evolutiva (reporte + mejor candidato).
@@ -159,6 +175,10 @@ pub struct EvolveOutcome {
     pub best_tau: f32,
     /// Métricas del mejor candidato.
     pub best: Scored,
+    /// Bit-tensor del mejor candidato (para consolidar el GGUF disperso).
+    pub best_adjacency: Vec<u8>,
+    /// Pesos activos del mejor candidato.
+    pub best_weights: Vec<f32>,
 }
 
 /// Ejecuta el loop evolutivo y devuelve el reporte JSON.
@@ -168,7 +188,21 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     engine.prepare()?;
 
     // --- Profesor (H0) y datos de calibración ---
-    let g_base = CppnGenome::random_with(params.seed, 0.5);
+    let g_base = match &params.warm_genome {
+        Some(path) => {
+            let flat = read_f32_bin(&path.to_string_lossy())?;
+            let expected_len = CppnGenome::random_with(0, 0.5).param_count();
+            if flat.len() != expected_len {
+                return Err(format!(
+                    "genoma warm de {} f32 (se esperaban {})",
+                    flat.len(),
+                    expected_len
+                ));
+            }
+            CppnGenome::from_flatten(&flat)
+        }
+        None => CppnGenome::random_with(params.seed, 0.5),
+    };
     let flat = g_base.flatten();
     let genome_len = flat.len();
     // Profesor real (archivos f32) o sintético (aleatorio denso).
@@ -236,7 +270,12 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
             // Decodificación GPU (reemplaza el instantiate CPU por candidato).
             let (w_dense, adj, _active) =
                 engine.cppn_decode(&f, params.d_in, params.d_out, tau)?;
-            let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
+            // Modo warm-start por copia: pesos activos = profesor (topología del genoma).
+            let topo = if params.teacher_copy {
+                topology_from_dense(&w0, &adj, params.d_in, params.d_out)
+            } else {
+                topology_from_dense(&w_dense, &adj, params.d_in, params.d_out)
+            };
             let (rp, ci, vals) = topo.to_csr(params.d_in, params.d_out);
             let h1 = engine.spmm_csr(&x, &rp, &ci, &vals, params.d_in, params.d_out)?;
             let k1 = engine.gram(&h1, params.d_out, params.batch)?;
@@ -250,6 +289,8 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
                 cka,
                 sparsity,
                 tau,
+                adjacency: topo.adjacency_bits.clone(),
+                weights: topo.weights.clone(),
             });
             eprintln!(
                 "[evolve] gen {gen} cand {col} t={:.2}s cka={cka:.3} sp={sparsity:.3}",
@@ -262,10 +303,10 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
         let elite: Vec<usize> = scored.iter().take(cma_params.mu).map(|s| s.col).collect();
         state.update(&cma_params, &pop, &elite);
 
-        let gen_best = scored[0];
+        let gen_best = scored[0].clone();
         if gen_best.fitness > best_so_far {
             best_so_far = gen_best.fitness;
-            best_scored = Some(gen_best);
+            best_scored = Some(gen_best.clone());
             // Guardar el genoma del mejor candidato de la generación.
             let z = pop.candidates.column(gen_best.col);
             let mut f = flat.clone();
@@ -300,6 +341,8 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     let best = best_scored.ok_or("sin candidatos evaluados")?;
     let best_flat = best_flat.ok_or("sin genoma del mejor candidato")?;
     let ok = best.fitness.is_finite() && best.cka.is_finite() && best.cka >= 0.0;
+    let best_adjacency = best.adjacency.clone();
+    let best_weights = best.weights.clone();
 
     let report = json!({
         "ok": ok,
@@ -323,6 +366,8 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
         best_flat,
         best_tau: best.tau,
         best,
+        best_adjacency,
+        best_weights,
     })
 }
 
@@ -369,6 +414,19 @@ pub fn cmd(args: &[String]) -> ExitCode {
                     params.seed = v;
                 }
             }
+            "--tau0" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.tau0 = v;
+                }
+            }
+            "--teacher-copy" => {
+                params.teacher_copy = true;
+            }
+            "--warm" => {
+                i += 1;
+                params.warm_genome = args.get(i).map(PathBuf::from);
+            }
             "--teacher-w" => {
                 i += 1;
                 params.teacher_w = args.get(i).cloned();
@@ -414,6 +472,32 @@ pub fn cmd(args: &[String]) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fase 4b (warm-start por copia): `topology_from_dense` sobre el tensor del
+    /// profesor conserva el peso del profesor en las posiciones activas.
+    #[test]
+    fn teacher_copy_conserva_pesos_del_profesor() {
+        let d_in = 2;
+        let d_out = 3;
+        // Profesor [d_out, d_in] fila-mayor.
+        let w0: Vec<f32> = (1..=6).map(|k| k as f32).collect();
+        // Activas: conn0 (i0,j0), conn3 (i1,j0), conn5 (i1,j2).
+        let mut adj = vec![0u8; 1];
+        for c in [0usize, 3, 5] {
+            adj[c / 8] |= 1 << (c % 8);
+        }
+        let topo = topology_from_dense(&w0, &adj, d_in, d_out);
+        // w0[j*d_in + i]: conn0->1, conn3->2, conn5->6.
+        assert_eq!(topo.weights, vec![1.0, 2.0, 6.0]);
+        assert_eq!(topo.active_connections(), 3);
+        assert_eq!(topo.total_connections, 6);
+    }
+}
+
 
 
 

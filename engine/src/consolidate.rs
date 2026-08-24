@@ -6,8 +6,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use saor_domain::cppn::CppnGenome;
-use saor_domain::topology::instantiate;
 use saor_streamer::gguf_sparse::{write_sparse_gguf, SparseBlock};
 use serde_json::json;
 
@@ -48,6 +46,19 @@ pub fn cmd(args: &[String]) -> ExitCode {
                     params.seed = v;
                 }
             }
+            "--tau0" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.tau0 = v;
+                }
+            }
+            "--teacher-copy" => {
+                params.teacher_copy = true;
+            }
+            "--warm" => {
+                i += 1;
+                params.warm_genome = args.get(i).map(PathBuf::from);
+            }
             "--teacher-w" => {
                 i += 1;
                 params.teacher_w = args.get(i).cloned();
@@ -78,17 +89,19 @@ pub fn cmd(args: &[String]) -> ExitCode {
 
     match crate::evolve::run(&params) {
         Ok(outcome) => {
-            let genome = CppnGenome::from_flatten(&outcome.best_flat);
-            let topo = instantiate(&genome, params.d_in, params.d_out, outcome.best_tau);
-            let active_connections = topo.active_connections();
-            let d_arch = topo.sparsity(); // contrato: >= 0.4
+            let active_connections = outcome
+                .best_adjacency
+                .iter()
+                .map(|b| b.count_ones() as usize)
+                .sum::<usize>();
+            let d_arch = 1.0 - active_connections as f32 / (params.d_in * params.d_out) as f32;
             let block = SparseBlock {
                 d_in: params.d_in,
                 d_out: params.d_out,
                 tau: outcome.best_tau,
                 genome: outcome.best_flat,
-                adjacency: topo.adjacency_bits,
-                weights: topo.weights,
+                adjacency: outcome.best_adjacency,
+                weights: outcome.best_weights,
             };
             if let Err(e) = write_sparse_gguf(&path, &block) {
                 eprintln!("consolidate: no se pudo escribir el GGUF: {e}");

@@ -135,7 +135,34 @@
   generaciones con subespacio 120 — señal de que la inicialización del genoma
   (no aleatoria) y/o más generaciones son necesarias para fidelidad real.
 
-
+## D15 — Fase 4b (warm-start): la regresión CPPN no alcanza 0.85; la copia del profesor sí (CKA medido)
+- `python/scripts/warm_start.py` implementa la spec v2: sustrato exacto
+  (`build_substrate` == `input_vector`), Método A (torch Adam+Ridge) y Método B
+  (NumPy/Tikhonov-ELM), alineación `l_ij` (`w2[1,:]=0`, `b2[1]=logit(ρ)`),
+  salida `genome.bin` en orden `flatten()` de `saor_domain::cppn`.
+- **Medición empírica sobre el gate real de SmolLM2 (`blk.0.ffn_gate` 576×1536):**
+  - Método B (ELM 16→256 ocultos): CKA ≈ 0.14–0.17 — la CPPN es una función
+    suave del sustrato y los pesos FFN entrenados no tienen estructura suave en
+    `(i,j)`. El techo SVD rank-128 (CKA 0.90) requiere la base óptima que la
+    CPPN no puede producir. **El umbral 0.85 de la spec no es alcanzable por
+    regresión CPPN sobre FFNs reales.**
+  - **Alternativa que cumple el contrato — "copia del profesor":** gen 0 denso
+    con pesos del tensor real (`CKA=1.0`) y la evolución esculpe la topología
+    (`l_ij`, `τ`). Curva medida sobre el gate real: sp 0.4→CKA 0.998, sp
+    0.9→0.951, sp 0.99→0.876. Esto coincide con el §5 de la spec v2 ("la
+    evolución se enfoca en ajustar `l_ij` y `τ`").
+- **Implementación:** `evolve`/`consolidate` con `--teacher-copy` (los pesos
+  activos del candidato = profesor; el genoma solo controla la topología vía el
+  bit-tensor del decode GPU) y `--tau0` (recomendado 0.3: zona sensible del
+  sigmoide; con 0.02 la esparcidad no avanza). `--warm genome.bin` carga un
+  genoma base en lugar del aleatorio.
+- **Validación end-to-end (gate real):** `consolidate --teacher-copy --tau0 0.3`
+  → `best_cka=0.953`, `d_arch=0.572`, GGUF disperso (378K/885K conexiones
+  activas) validado por `hayai load_saor_sparse` (`spmm_csr == spmm_dense`,
+  max_err 0). CKA ≥ 0.85 en toda la corrida.
+- Tests: +4 Python (`test_warm_start.py`: sustrato, alineación `l_ij`, Método B
+  sobre profesor suave, curva copia-profesor) y +1 Rust (teacher-copy
+  `topology_from_dense`). Suites: 32 Python + 33 Rust, verdes.
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
