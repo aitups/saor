@@ -275,6 +275,33 @@
   la esparsidad objetivo por bloque a ~0.05–0.1 (cumple KL pero no D_arch); o
   (c) reequilibrar los umbrales del contrato.
 
+## D20 — Optimización global bajo Frontera de Pareto (redefinición aprobada)
+- **Objetivo redefinido por el usuario:** `max D_arch_global` sujeto a
+  `KL_global ≤ 0.50`, con esparsidad **heterogénea por capa** (la evolución
+  descubre qué capas toleran 70% y cuáles deben quedar al 5%). Vías A (vector
+  de esparsidad por capa, poda por magnitud) y B (CPPN global con coordenada de
+  capa) en paralelo.
+- **Runtime global (hayai):** `FfnOverride` + `forward_with_override` (override
+  FFN por capa en runtime, sin re-embed por candidato) + `eval_sparse`
+  (KL_global y D_arch_global en lockstep original/candidato, soporta
+  gate/up/down por capa). `LlamaWeights`/`LayerWeights`/`Tokenizer` ahora Clone.
+- **Mapa de sensibilidad (SmolLM2, poda por magnitud, KL@sp 0.4):**
+  capas tolerantes 17/16/14/12/25 (KL 0.016–0.024); capas sensibles **28
+  (1.72)** / 29 / 0 / 8 / 11. Heterogeneidad real confirmada.
+- **Barrida heterogénea:** la KL acumulada es **super-aditiva**:
+  - 16 capas tolerantes (12–27) gate-only @0.6 → D_arch 0.32, KL **1.16**.
+  - FFN completo (gate+up+down) 12–27 @0.4 → D_arch 0.40, KL **2.27**.
+  - `up`/`down` tienen coste KL/paramétro ≈ al gate (0.013/0.014 vs 0.016 @0.4).
+- **Evolución global CMA-ES (Vía A):** convergió a la **frontera de Pareto real
+  de SmolLM2: D_arch ≈ 0.10 @ KL ≈ 0.50** (gen 9: D_arch 0.101, KL 0.508).
+  Ninguna configuración alcanza KL ≤ 0.50 por encima de D_arch ~0.10.
+- **Conclusión empírica:** el objetivo `D_arch 0.40 @ KL 0.50` es **inalcanzable
+  en SmolLM2** (incluso con poda por magnitud, la cota superior). El presupuesto
+  de KL 0.50 limita D_arch a ~0.10. El mecanismo global Pareto funciona y
+  descubre la frontera real; queda por ver si ALIA/Qwen (modelos grandes con más
+  redundancia) ofrecen una frontera más favorable. Scripts:
+  `sensitivity_map.py`, `hetero_probe.py`, `pareto_evolve.py`.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
