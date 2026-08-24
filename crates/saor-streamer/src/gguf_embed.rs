@@ -632,18 +632,14 @@ pub fn read_embedded_block(src: &Path, tensor_name: &str) -> Result<Option<Spars
     let mut adjacency = vec![0u8; adj_len];
     read_exact_at(&mut f, &mut adjacency, h.data_start_abs + adj_t.offset)?;
 
-    let mut read_f32s = |t: &TensorInfo, count: usize| -> Result<Vec<f32>, String> {
-        let mut out = Vec::with_capacity(count);
-        let mut pos = h.data_start_abs + t.offset;
-        let mut buf = [0u8; 4];
-        for _ in 0..count {
-            read_exact_at(&mut f, &mut buf, pos)?;
-            out.push(f32::from_le_bytes(buf));
-            pos += 4;
-        }
-        Ok(out)
-    };
-    let weights = read_f32s(w_t, w_t.dims.first().copied().unwrap_or(0) as usize)?;
+    // Lectura en bloque de los pesos activos (evita un seek por float).
+    let w_count = w_t.dims.first().copied().unwrap_or(0) as usize;
+    let mut raw = vec![0u8; w_count.saturating_mul(4)];
+    read_exact_at(&mut f, &mut raw, h.data_start_abs + w_t.offset)?;
+    let weights: Vec<f32> = raw
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
     let genome = match m("genome") {
         Some(KvValue::F32Array(g)) => g.clone(),
         _ => Vec::new(),

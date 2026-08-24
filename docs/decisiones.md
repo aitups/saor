@@ -209,6 +209,17 @@
   + SpMM 121M no-ceros. Proyección: ~36 min/bloque × 144 tensores ≈ 86 h —
   **inaceptable para la Fase 4**. Plan: kernel GPU de "gather" de pesos del
   profesor en las posiciones activas (elimina el loop CPU) en la Fase 3/4.
+- **Fix de lectura en bloque:** `read_embedded_block` hacía un `seek`+lectura de
+  4 bytes por float (201M syscalls en ALIA → cuelga). Ahora lee el tensor de
+  pesos en un solo `read` y decodifica. Verificación de ALIA en segundos.
+- **Nuevo subcomando `make-block`:** ensambla un `SparseBlock` desde bins crudos
+  (`--identity`, `--adj`, `--weights`, `--genome`, `--tau`), para baselines y
+  checkpoints sin correr la evolución.
+- **Checkpoint de escala (ALIA 23 GB) ✓:** `embed` de `blk.0.ffn_gate`
+  (8192×24576) en el GGUF completo de 24.6 GB → 25.3 GB resultante,
+  `verified:[true]` (re-lectura idéntica), tensores dispersos + metadatos
+  `saor.*` correctos (audit Python: 436 tensores, 40.46 B params). El rewriter
+  streaming nunca carga el archivo en RAM.
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;

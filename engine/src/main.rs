@@ -13,6 +13,7 @@ mod decode_bench;
 mod embed;
 mod evolve;
 mod kernels_run;
+mod make_block;
 
 /// Resultado de `device-info` en formato JSON (consumible por Python).
 #[derive(Serialize)]
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
         Some("evolve") => evolve::cmd(&args[2..]),
         Some("consolidate") => consolidate::cmd(&args[2..]),
         Some("embed") => embed::cmd(&args[2..]),
+        Some("make-block") => make_block::cmd(&args[2..]),
         Some("decode-bench") => decode_bench::cmd(&args[2..]),
         Some("version") => {
             println!(
