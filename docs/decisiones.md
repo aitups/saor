@@ -254,6 +254,27 @@
   `--dev-mmap` (`Generator`). Qwen (attn_qkv fusionado) requiere soporte de
   arquitectura adicional en `LlamaWeights`.
 
+## D19 — Fase 2 (hooks reales) + curva KL vs esparsidad a nivel de modelo
+- **hooks reales:** `Generator::forward_with_hooks` (captura la entrada FFN por
+  capa, salida del `ffn_norm`) + ejemplo `dump-hooks`. X real de SmolLM2
+  capturada (30 capas × 4096 posiciones × 576). La evolución con X real
+  (SmolLM2 blk.0 gate) da best_cka=0.937 a sp=0.798.
+- **Curva KL a nivel de modelo (SmolLM2, gate blk.0, poda por magnitud = cota
+  superior, `kl_sweep_model.py`):**
+  | sparsity | 0.0 | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.8 |
+  |---|---|---|---|---|---|---|---|---|
+  | KL sim. | 0.000 | 0.085 | 0.212 | 0.504 | 0.704 | 2.52 | 3.09 | 3.49 |
+- **Hallazgo:** la KL a nivel de modelo crece muy rápido con la esparsidad; el
+  umbral del contrato `KL ≤ 0.05` solo se cumple a ~5–8% de esparsidad por
+  bloque — **en conflicto con `D_arch ≥ 0.4`** incluso con poda óptima. Con el
+  bloque evolucionado real (sp 0.798, X real) la KL es 3.88. La topología CPPN
+  rinde ~10% peor que la poda por magnitud (3.88 vs 3.49 a sp 0.8).
+- **Decisión pendiente (usuario):** reconciliar el contrato — (a) interpretar
+  `KL ≤ 0.05` como pérdida por bloque (`kl_proxy` de `contract.py`, que sí es
+  compatible con sp 0.4) en lugar de KL de logits de modelo completo; (b) bajar
+  la esparsidad objetivo por bloque a ~0.05–0.1 (cumple KL pero no D_arch); o
+  (c) reequilibrar los umbrales del contrato.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
