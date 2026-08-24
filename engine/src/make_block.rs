@@ -32,6 +32,9 @@ pub fn cmd(args: &[String]) -> ExitCode {
     let mut genome_path: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut identity = false;
+    /// El archivo `--weights` viene en el layout del dump `[d_out, d_in]`
+    /// fila-mayor y debe reordenarse a i-mayor (conn = i*d_out+j).
+    let mut dense_dump = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -55,6 +58,9 @@ pub fn cmd(args: &[String]) -> ExitCode {
             }
             "--identity" => {
                 identity = true;
+            }
+            "--dense-dump" => {
+                dense_dump = true;
             }
             "--adj" => {
                 i += 1;
@@ -130,6 +136,24 @@ pub fn cmd(args: &[String]) -> ExitCode {
             eprintln!("make-block: {e}");
             return ExitCode::FAILURE;
         }
+    };
+    // `--dense-dump`: el archivo de pesos está en el layout del dump
+    // `[d_out, d_in]` fila-mayor; el `SparseBlock` exige el orden i-mayor
+    // (conn = i*d_out+j) que usa `topology_from_dense` de `consolidate`.
+    let weights = if dense_dump {
+        if weights.len() != d_in * d_out {
+            eprintln!("make-block: --dense-dump espera {d_in}*{d_out} f32");
+            return ExitCode::FAILURE;
+        }
+        let mut ordered = Vec::with_capacity(weights.len());
+        for i in 0..d_in {
+            for j in 0..d_out {
+                ordered.push(weights[j * d_in + i]);
+            }
+        }
+        ordered
+    } else {
+        weights
     };
     let genome = match &genome_path {
         Some(p) => read_f32_bin(p).unwrap_or_default(),
