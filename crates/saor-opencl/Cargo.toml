@@ -1,0 +1,9 @@
+[package]
+name = "saor-opencl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cómputo OpenCL 3.0 sobre la RTX 4050: contexto, buffers y kernels (CPPN, SpMM, Gram/CKA) con mitigación WDDM/TDR."
+
+[dependencies]
+opencl3 = "0.5"

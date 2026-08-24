@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/saor-domain",
+    "crates/saor-opencl",
+    "crates/saor-streamer",
+    "engine",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Álgebra lineal en CPU: Rust puro, sin BLAS/LAPACK externos (decisión de diseño).
+[workspace.dependencies]
+nalgebra = { version = "0.33", features = ["matrixmultiply"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+half = "2"

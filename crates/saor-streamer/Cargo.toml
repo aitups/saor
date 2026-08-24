@@ -1,0 +1,10 @@
+[package]
+name = "saor-streamer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Motor de streaming capa a capa con doble buffer, memoria pinned, cuantización 4-bit y almacenamiento GGUF disperso."
+
+[dependencies]
+half.workspace = true
+serde.workspace = true

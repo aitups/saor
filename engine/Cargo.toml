@@ -1,0 +1,17 @@
+[package]
+name = "saor-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binario saor-engine: CLI/IPC (JSON-lines) que orquesta el pipeline CPPN -> topología -> CKA -> CMA-ES."
+
+[[bin]]
+name = "saor-engine"
+path = "src/main.rs"
+
+[dependencies]
+saor-domain = { path = "../crates/saor-domain" }
+saor-opencl = { path = "../crates/saor-opencl" }
+saor-streamer = { path = "../crates/saor-streamer" }
+serde.workspace = true
+serde_json.workspace = true

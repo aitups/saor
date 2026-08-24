@@ -1,0 +1,20 @@
+# Rust
+/target
+Cargo.lock.orig
+
+# Artefactos locales generados (import lib de OpenCL, etc.)
+/.local/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+*.pyd
+
+# Tooling / local
+.vscode/
+*.log
