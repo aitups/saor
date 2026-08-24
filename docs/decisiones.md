@@ -220,6 +220,17 @@
   `verified:[true]` (re-lectura idéntica), tensores dispersos + metadatos
   `saor.*` correctos (audit Python: 436 tensores, 40.46 B params). El rewriter
   streaming nunca carga el archivo en RAM.
+- **D17 resuelto (kernel GPU de gather):** `cppn_decode_adjacency` (no
+  materializa `w_out`, evita 805 MB GPU/host) + `count_rows`/`gather_csr_teacher`
+  + `spmm_csr_teacher` (CSR construido y ejecutado en GPU, sin roundtrip host).
+  `Scored` deja de clonar adyacencia+pesos por candidato (la topología del mejor
+  se reconstruye al final, una sola vez).
+  - SmolLM2: trayectoria **idéntica** a la pre-fix (best_fit=1.1489,
+    cka=0.939, sp=0.699) y generaciones ~2.5× más rápidas.
+  - **ALIA real: ~30 s → 0.9–4.3 s por candidato (7–30×).** Evolución completa
+    del gate 8192×24576 en 6 gens (~5 min): **best_cka=0.950, d_arch=0.694**
+    (61.6M/201M activos). `consolidate` + `embed` en el GGUF completo:
+    `verified:[true]`, 24.47 GB conservados + 272 MB dispersos.
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;

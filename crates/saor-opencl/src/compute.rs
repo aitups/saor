@@ -207,6 +207,119 @@ impl ClEngine {
         Ok((w_out, a_out, act_out[0]))
     }
 
+    /// Decodifica **solo la adyacencia** (warm-start teacher-copy): no
+    /// materializa la matriz densa `w` (evita ~805 MB de escritura GPU +
+    /// lectura host en bloques ALIA/Qwen). Devuelve `(adjacency, active)`.
+    pub fn cppn_decode_adjacency(
+        &self,
+        genome: &[f32],
+        d_in: usize,
+        d_out: usize,
+        tau: f32,
+    ) -> Result<(Vec<u8>, u32), String> {
+        let total = d_in * d_out;
+        let n_words = total.div_ceil(32);
+        let n_bytes = total.div_ceil(8);
+        let mut g = self.buffer::<f32>(genome.len())?;
+        let mut a_words = self.buffer::<u32>(n_words)?;
+        let mut act = self.buffer::<u32>(1)?;
+        self.write(&mut g, genome)?;
+        self.write(&mut act, &[0u32])?;
+        self.write(&mut a_words, &vec![0u32; n_words])?;
+
+        let kernel = self.kernel(0, "cppn_decode_adj")?;
+        kernel.set_arg(0, &g).map_err(|e| format!("arg genome: {e}"))?;
+        kernel.set_arg(1, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
+        kernel.set_arg(2, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
+        kernel.set_arg(3, &tau).map_err(|e| format!("arg tau: {e}"))?;
+        kernel.set_arg(4, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
+        kernel.set_arg(5, &act).map_err(|e| format!("arg active: {e}"))?;
+        self.enqueue_chunked(&kernel, total, CPPN_DECODE_CHUNK)?;
+
+        let mut a = self.buffer::<u8>(n_bytes)?;
+        let pack = self.kernel(0, "pack_adjacency")?;
+        pack.set_arg(0, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
+        pack.set_arg(1, &a).map_err(|e| format!("arg adj_out: {e}"))?;
+        self.enqueue_chunked(&pack, n_words, CPPN_DECODE_CHUNK)?;
+
+        let a_out = self.read(&a, n_bytes)?;
+        let act_out = self.read(&act, 1)?;
+        Ok((a_out, act_out[0]))
+    }
+
+    /// SpMM del DAG en modo teacher-copy: construye el CSR **en GPU** desde la
+    /// adyacencia + el tensor del profesor (D17), evitando el loop CPU O(N) por
+    /// candidato y la transferencia host del CSR (ci+vals ≈ 1 GB en ALIA).
+    pub fn spmm_csr_teacher(
+        &self,
+        x: &[f32],
+        w0: &[f32],
+        adj: &[u8],
+        d_in: usize,
+        d_out: usize,
+    ) -> Result<Vec<f32>, String> {
+        let batch = x.len() / d_in;
+        let mut xb = self.buffer::<f32>(x.len())?;
+        let mut wb = self.buffer::<f32>(w0.len())?;
+        let mut adjb = self.buffer::<u8>(adj.len())?;
+        let mut counts = self.buffer::<i32>(d_out)?;
+        self.write(&mut xb, x)?;
+        self.write(&mut wb, w0)?;
+        self.write(&mut adjb, adj)?;
+
+        // 1) Contar activos por fila en GPU.
+        let count_k = self.kernel(1, "count_rows")?;
+        count_k.set_arg(0, &adjb).map_err(|e| format!("arg adj: {e}"))?;
+        count_k.set_arg(1, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
+        count_k.set_arg(2, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
+        count_k.set_arg(3, &counts).map_err(|e| format!("arg counts: {e}"))?;
+        self.enqueue_chunked(&count_k, d_out, WDDM_CHUNK)?;
+        let counts_h = self.read(&counts, d_out)?;
+
+        // 2) Suma de prefijo en host (O(d_out), 96 KB en ALIA).
+        let mut row_ptr = vec![0i32; d_out + 1];
+        let mut acc = 0i32;
+        for j in 0..d_out {
+            row_ptr[j] = acc;
+            acc += counts_h[j];
+        }
+        row_ptr[d_out] = acc;
+        let nnz = acc as usize;
+        if nnz == 0 {
+            return Ok(vec![0.0f32; batch * d_out]);
+        }
+
+        let mut rpb = self.buffer::<i32>(row_ptr.len())?;
+        let mut ci = self.buffer::<i32>(nnz)?;
+        let mut vb = self.buffer::<f32>(nnz)?;
+        let mut yb = self.buffer::<f32>(batch * d_out)?;
+        self.write(&mut rpb, &row_ptr)?;
+
+        // 3) Gather de los pesos del profesor en las posiciones activas (GPU).
+        let gather_k = self.kernel(1, "gather_csr_teacher")?;
+        gather_k.set_arg(0, &adjb).map_err(|e| format!("arg adj: {e}"))?;
+        gather_k.set_arg(1, &wb).map_err(|e| format!("arg w0: {e}"))?;
+        gather_k.set_arg(2, &rpb).map_err(|e| format!("arg row_ptr: {e}"))?;
+        gather_k.set_arg(3, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
+        gather_k.set_arg(4, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
+        gather_k.set_arg(5, &ci).map_err(|e| format!("arg col_idx: {e}"))?;
+        gather_k.set_arg(6, &vb).map_err(|e| format!("arg vals: {e}"))?;
+        self.enqueue_chunked(&gather_k, d_out, WDDM_CHUNK)?;
+
+        // 4) SpMM CSR sobre buffers GPU (sin roundtrip host del CSR).
+        let spmm_k = self.kernel(1, "spmm_csr")?;
+        spmm_k.set_arg(0, &xb).map_err(|e| format!("arg x: {e}"))?;
+        spmm_k.set_arg(1, &rpb).map_err(|e| format!("arg row_ptr: {e}"))?;
+        spmm_k.set_arg(2, &ci).map_err(|e| format!("arg col_idx: {e}"))?;
+        spmm_k.set_arg(3, &vb).map_err(|e| format!("arg vals: {e}"))?;
+        spmm_k.set_arg(4, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
+        spmm_k.set_arg(5, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
+        spmm_k.set_arg(6, &yb).map_err(|e| format!("arg y: {e}"))?;
+        self.enqueue_chunked(&spmm_k, batch * d_out, WDDM_CHUNK)?;
+
+        self.read(&yb, batch * d_out)
+    }
+
     /// SpMM denso-enmascarado: `Y[b][j] = sum_i X[b][i] W[j][i]`.
     pub fn spmm_dense(
         &self,

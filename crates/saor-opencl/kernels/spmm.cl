@@ -37,3 +37,44 @@ __kernel void spmm_csr(
     }
     y[b * d_out + j] = acc;
 }
+
+// Cuenta conexiones activas por fila de salida `j` (D17: CSR en GPU para el
+// warm-start teacher-copy, evitando el loop CPU O(N) por candidato).
+__kernel void count_rows(
+    __global const uchar* adj, // bit-tensor, conn = i*d_out+j (LSB-first)
+    const int d_in,
+    const int d_out,
+    __global int* counts) // [d_out]
+{
+    const int j = get_global_id(0);
+    int c = 0;
+    for (int i = 0; i < d_in; i++) {
+        const int conn = i * d_out + j;
+        c += (adj[conn >> 3] >> (conn & 7)) & 1;
+    }
+    counts[j] = c;
+}
+
+// Gather de los pesos del profesor en las posiciones activas, en orden
+// j-mayor (CSR: filas = salidas j, columnas = entradas i).
+__kernel void gather_csr_teacher(
+    __global const uchar* adj,
+    __global const float* w0,       // [d_out, d_in] fila-mayor
+    __global const int* row_ptr,    // [d_out+1]
+    const int d_in,
+    const int d_out,
+    __global int* col_idx,          // nnz
+    __global float* vals)           // nnz
+{
+    const int j = get_global_id(0);
+    int w = 0;
+    for (int i = 0; i < d_in; i++) {
+        const int conn = i * d_out + j;
+        if ((adj[conn >> 3] >> (conn & 7)) & 1) {
+            const int off = row_ptr[j] + w;
+            col_idx[off] = i;
+            vals[off] = w0[j * d_in + i];
+            w++;
+        }
+    }
+}

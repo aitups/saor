@@ -146,7 +146,8 @@ fn topology_from_dense(
     }
 }
 
-/// Un candidato evaluado.
+/// Un candidato evaluado (solo métricas; la topología del mejor se reconstruye
+/// al final — D17: guardar adyacencia+pesos por candidato era O(N) extra).
 #[derive(Clone)]
 pub struct Scored {
     /// Índice en la población.
@@ -159,10 +160,6 @@ pub struct Scored {
     pub sparsity: f32,
     /// Umbral τ del candidato.
     pub tau: f32,
-    /// Bit-tensor `ffn_dag_adjacency` del candidato (para consolidar).
-    pub adjacency: Vec<u8>,
-    /// Pesos activos compactos del candidato (para consolidar).
-    pub weights: Vec<f32>,
 }
 
 /// Resultado de una corrida evolutiva (reporte + mejor candidato).
@@ -267,21 +264,26 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
                 f[tail_start + k] += z[k];
             }
             let tau = sigmoid(z[dim - 1]);
-            // Decodificación GPU (reemplaza el instantiate CPU por candidato).
-            let (w_dense, adj, _active) =
-                engine.cppn_decode(&f, params.d_in, params.d_out, tau)?;
-            // Modo warm-start por copia: pesos activos = profesor (topología del genoma).
-            let topo = if params.teacher_copy {
-                topology_from_dense(&w0, &adj, params.d_in, params.d_out)
+            // Decodificación GPU. Teacher-copy: solo adyacencia + CSR en GPU
+            // (D17); CPPN puro: matriz densa enmascarada + CSR en host.
+            let (h1, sparsity) = if params.teacher_copy {
+                let (adj, active) =
+                    engine.cppn_decode_adjacency(&f, params.d_in, params.d_out, tau)?;
+                let h1 = engine.spmm_csr_teacher(&x, &w0, &adj, params.d_in, params.d_out)?;
+                let sp = 1.0 - active as f32 / (params.d_in * params.d_out) as f32;
+                (h1, sp)
             } else {
-                topology_from_dense(&w_dense, &adj, params.d_in, params.d_out)
+                let (w_dense, adj, active) =
+                    engine.cppn_decode(&f, params.d_in, params.d_out, tau)?;
+                let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
+                let (rp, ci, vals) = topo.to_csr(params.d_in, params.d_out);
+                let h1 = engine.spmm_csr(&x, &rp, &ci, &vals, params.d_in, params.d_out)?;
+                let sp = 1.0 - active as f32 / (params.d_in * params.d_out) as f32;
+                (h1, sp)
             };
-            let (rp, ci, vals) = topo.to_csr(params.d_in, params.d_out);
-            let h1 = engine.spmm_csr(&x, &rp, &ci, &vals, params.d_in, params.d_out)?;
             let k1 = engine.gram(&h1, params.d_out, params.batch)?;
             let k1m = dmatrix(&k1, params.batch, params.batch);
             let cka = centered_cka(&k0m, &k1m);
-            let sparsity = topo.sparsity();
             let fitness = cka + params.alpha * sparsity;
             scored.push(Scored {
                 col,
@@ -289,8 +291,6 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
                 cka,
                 sparsity,
                 tau,
-                adjacency: topo.adjacency_bits.clone(),
-                weights: topo.weights.clone(),
             });
             eprintln!(
                 "[evolve] gen {gen} cand {col} t={:.2}s cka={cka:.3} sp={sparsity:.3}",
@@ -341,8 +341,23 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
     let best = best_scored.ok_or("sin candidatos evaluados")?;
     let best_flat = best_flat.ok_or("sin genoma del mejor candidato")?;
     let ok = best.fitness.is_finite() && best.cka.is_finite() && best.cka >= 0.0;
-    let best_adjacency = best.adjacency.clone();
-    let best_weights = best.weights.clone();
+    // Reconstruir la topología del mejor candidato (una sola vez, no por
+    // candidato — D17). El genoma best_flat + best.tau se re-decodifican.
+    let (best_adjacency, best_weights) = if params.teacher_copy {
+        let (adj, _) = engine.cppn_decode_adjacency(
+            &best_flat,
+            params.d_in,
+            params.d_out,
+            best.tau,
+        )?;
+        let topo = topology_from_dense(&w0, &adj, params.d_in, params.d_out);
+        (adj, topo.weights)
+    } else {
+        let (w_dense, adj, _) =
+            engine.cppn_decode(&best_flat, params.d_in, params.d_out, best.tau)?;
+        let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
+        (adj, topo.weights)
+    };
 
     let report = json!({
         "ok": ok,

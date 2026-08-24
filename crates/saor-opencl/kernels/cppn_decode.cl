@@ -90,6 +90,41 @@ __kernel void cppn_decode(
     }
 }
 
+// Variante solo-adyacencia (warm-start teacher-copy): no materializa w_out
+// (evita 805 MB de escritura GPU + lectura host en bloques ALIA/Qwen). El
+// fitness teacher-copy solo necesita el bit-tensor + el conteo de activos.
+__kernel void cppn_decode_adj(
+    __global const float* genome,
+    const int d_in,
+    const int d_out,
+    const float tau,
+    __global uint* adj_words,     // ceil(total/32)
+    __global uint* active_out)    // [1]
+{
+    const int conn = get_global_id(0);
+    const int total = d_in * d_out;
+    if (conn >= total) return;
+    const int i = conn / d_out;
+    const int j = conn % d_out;
+    const float y_i = (d_in > 1) ? -1.0f + 2.0f * (float)i / (float)(d_in - 1) : 0.0f;
+    const float y_j = (d_out > 1) ? -1.0f + 2.0f * (float)j / (float)(d_out - 1) : 0.0f;
+    float v[CPPN_INPUT_DIM];
+    v[0] = -1.0f;
+    v[1] = y_i;
+    v[2] = 1.0f;
+    v[3] = y_j;
+    v[4] = 2.0f;
+    v[5] = y_j - y_i;
+    v[6] = sin(PI * y_i);
+    v[7] = cos(PI * y_j);
+    float l;
+    eval_cppn(genome, v, &l);
+    if (l > tau) {
+        atomic_or(&adj_words[conn >> 5], 1u << (conn & 31));
+        atomic_inc(active_out);
+    }
+}
+
 // Convierte las palabras u32 de adyacencia al bit-tensor u8 (LSB-first).
 __kernel void pack_adjacency(
     __global const uint* adj_words, // ceil(total/32)
