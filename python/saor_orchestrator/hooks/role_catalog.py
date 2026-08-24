@@ -25,10 +25,22 @@ ROLE_CATALOG: list[tuple[re.Pattern, str]] = [
     (re.compile(r"blk\.(\d+)\.ffn_gate\.weight"), "ffn.gate"),
     (re.compile(r"blk\.(\d+)\.ffn_up\.weight"), "ffn.up"),
     (re.compile(r"blk\.(\d+)\.ffn_down\.weight"), "ffn.down"),
+    (re.compile(r"blk\.(\d+)\.attn_qkv\.weight"), "attn.qkv"),
+    (re.compile(r"blk\.(\d+)\.attn_gate\.weight"), "attn.gate"),
     (re.compile(r"blk\.(\d+)\.attn_q\.weight"), "attn.q"),
     (re.compile(r"blk\.(\d+)\.attn_k\.weight"), "attn.k"),
     (re.compile(r"blk\.(\d+)\.attn_v\.weight"), "attn.v"),
     (re.compile(r"blk\.(\d+)\.attn_output\.weight"), "attn.out"),
+    # Bloques SSM (Mamba2/NextN) de Qwen: proyecciones lineales esparcibles.
+    (re.compile(r"blk\.(\d+)\.ssm_out\.weight"), "ssm.out"),
+    (re.compile(r"blk\.(\d+)\.ssm_alpha\.weight"), "ssm.alpha"),
+    (re.compile(r"blk\.(\d+)\.ssm_beta\.weight"), "ssm.beta"),
+    # Núcleo recurrente S6: NO esparcible (se conserva denso).
+    (re.compile(r"blk\.(\d+)\.ssm_conv1d\.weight"), "ssm.core"),
+    (re.compile(r"blk\.(\d+)\.ssm_conv1d\.bias"), "ssm.core"),
+    (re.compile(r"blk\.(\d+)\.ssm_dt\.bias"), "ssm.core"),
+    (re.compile(r"blk\.(\d+)\.ssm_norm\.weight"), "ssm.core"),
+    (re.compile(r"blk\.(\d+)\.ssm_a$"), "ssm.core"),
     (re.compile(r"blk\.(\d+)\.attn_norm\.weight"), "norm.attn"),
     (re.compile(r"blk\.(\d+)\.ffn_norm\.weight"), "norm.ffn"),
     (re.compile(r"blk\.(\d+)\.attn_q_norm\.weight"), "norm.q"),
@@ -36,11 +48,71 @@ ROLE_CATALOG: list[tuple[re.Pattern, str]] = [
     (re.compile(r"model\.layers\.(\d+)\.mlp\.gate_proj\.weight"), "ffn.gate"),
     (re.compile(r"model\.layers\.(\d+)\.mlp\.up_proj\.weight"), "ffn.up"),
     (re.compile(r"model\.layers\.(\d+)\.mlp\.down_proj\.weight"), "ffn.down"),
-    (re.compile(r"model\.layers\.(\d+)\.self_attn\.(q|k|v|o)_proj\.weight"), "attn"),
+    (re.compile(r"model\.layers\.(\d+)\.self_attn\.q_proj\.weight"), "attn.q"),
+    (re.compile(r"model\.layers\.(\d+)\.self_attn\.k_proj\.weight"), "attn.k"),
+    (re.compile(r"model\.layers\.(\d+)\.self_attn\.v_proj\.weight"), "attn.v"),
+    (re.compile(r"model\.layers\.(\d+)\.self_attn\.o_proj\.weight"), "attn.out"),
+    (re.compile(r"nextn\."), "nextn"),
     (re.compile(r"output_norm\.weight"), "norm.output"),
     (re.compile(r"token_embd\.weight"), "embd"),
     (re.compile(r"output\.weight"), "lm_head"),
 ]
+
+# Roles esparcibles por el pipeline CPPN/SpMM (Fase 0, cobertura > 90%). El
+# resto (norms, embd, lm_head, núcleo recurrente S6, nextn) permanece denso.
+SPARSIFIABLE_ROLES = frozenset(
+    {
+        "ffn.gate",
+        "ffn.up",
+        "ffn.down",
+        "attn.q",
+        "attn.k",
+        "attn.v",
+        "attn.out",
+        "attn.qkv",
+        "attn.gate",
+        "ssm.out",
+        "ssm.alpha",
+        "ssm.beta",
+    }
+)
+
+
+def is_sparsifiable(name: str) -> bool:
+    """¿El tensor es candidato a topología no dirigida (CPPN/SpMM)?"""
+    r = classify(name)
+    return bool(r and r.role in SPARSIFIABLE_ROLES)
+
+
+def sparsifiable_tensors(tensor_names: list[str]) -> list[str]:
+    """Todos los tensores esparcibles del modelo, en orden."""
+    return [n for n in tensor_names if is_sparsifiable(n)]
+
+
+def coverage_report(tensor_infos) -> dict:
+    """Parámetros por rol y fracción esparcible (Fase 0 / objetivo >90%).
+
+    `tensor_infos`: iterable con `.name` y `.numel` (p. ej. los `TensorInfo`
+    de `gguf_audit.read_gguf_header`). Calcula el % del volumen total del
+    modelo cubierto por el pipeline CPPN/SpMM (FFN + atención + SSM-proj).
+    """
+    total = 0
+    sparsifiable = 0
+    by_role: dict[str, int] = {}
+    for t in tensor_infos:
+        numel = int(t.numel)
+        total += numel
+        r = classify(t.name)
+        role = r.role if r else "other"
+        by_role[role] = by_role.get(role, 0) + numel
+        if r and r.role in SPARSIFIABLE_ROLES:
+            sparsifiable += numel
+    return {
+        "total_params": total,
+        "sparsifiable_params": sparsifiable,
+        "coverage": sparsifiable / max(1, total),
+        "params_by_role": dict(sorted(by_role.items(), key=lambda kv: -kv[1])),
+    }
 
 
 @dataclass(frozen=True)

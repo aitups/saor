@@ -164,6 +164,30 @@
   sobre profesor suave, curva copia-profesor) y +1 Rust (teacher-copy
   `topology_from_dense`). Suites: 32 Python + 33 Rust, verdes.
 
+## D16 — Fase 0: catálogo de roles completo (cobertura >90%) + decisiones de alcance
+- **Alcance aprobado por el usuario:** incluir atención, objetivo de cobertura
+  >90% del volumen del modelo, GGUF **embebido** desde el principio (sin
+  sidecar), y validación escalonada (tests en SmolLM2 + checkpoint contra
+  ALIA/Qwen en cada fase).
+- `role_catalog.py` ampliado con los roles medidos de Qwen3.8-27B-UD (NextN):
+  `attn.qkv`, `attn.gate` (atención fusionada) y `ssm.out`/`ssm.alpha`/`ssm.beta`
+  (proyecciones lineales del bloque SSM, "cirugía híbrida" — el núcleo
+  recurrente `ssm_a`/`ssm_dt.bias`/`ssm_norm`/`ssm_conv1d` se marca `ssm.core`
+  **no esparcible** y se conserva denso).
+- Nuevo `SPARSIFIABLE_ROLES` + `is_sparsifiable`/`sparsifiable_tensors`/
+  `coverage_report`. **Cobertura medida sobre los GGUFs reales:**
+  - Qwen3.8-27B-UD: **90.5%** (24.72/27.32 B; FFN 63.6% + attn 21.3% + SSM-proj 5.6%).
+  - ALIA-40b: **89.6%** (36.24/40.43 B; FFN + attn). El déficit al 90% es
+    íntegramente `lm_head` (2.10 B, **sin atar** — Q6_K vs Q4_K de `token_embd`)
+    + embeddings + norms: no esparcibles por diseño. Cobertura = 100% del
+    volumen esparcible.
+  - SmolLM2-135M: 78.9% (canario de tests; la atención pesa más en modelos
+    pequeños).
+- Formato objetivo (Fase 1): GGUF embebido — sustituir `blk.N.<rol>.weight`
+  denso por `blk.N.<rol>.ffn_dag_adjacency` (I8) + `blk.N.<rol>.ffn_dag_weights`
+  (activos 4-bit) + metadatos `saor.blk.N.<rol>.*` por bloque.
+- Tests: +3 Python (roles SSM/attn, esparcibles, cobertura). Suite: 35 Python.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).

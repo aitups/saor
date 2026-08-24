@@ -17,11 +17,23 @@ from saor_orchestrator.hooks.gguf_audit import (
     read_gguf_header,
 )
 from saor_orchestrator.hooks.role_catalog import (
+    SPARSIFIABLE_ROLES,
     classify,
+    coverage_report,
     identity_adjacency,
     init_weights_from_base,
+    is_sparsifiable,
     select_candidate_blocks,
+    sparsifiable_tensors,
 )
+
+
+class _FakeInfo:
+    """Mínimo `TensorInfo`-like para tests de cobertura (name + numel)."""
+
+    def __init__(self, name: str, numel: int) -> None:
+        self.name = name
+        self.numel = numel
 
 
 def _write_mini_gguf(path: Path) -> None:
@@ -97,6 +109,72 @@ def test_classify_roles():
     assert classify("output.weight").role == "lm_head"
     assert classify("model.layers.5.mlp.gate_proj.weight").role == "ffn.gate"
     assert classify("algo.raro.weight") is None
+
+
+def test_classify_roles_ssm_y_attn_qwen():
+    """Roles medidos del GGUF Qwen3.8-27B-UD (NextN: attn + SSM + FFN)."""
+    assert classify("blk.0.attn_qkv.weight").role == "attn.qkv"
+    assert classify("blk.0.attn_gate.weight").role == "attn.gate"
+    assert classify("blk.0.attn_q.weight").role == "attn.q"
+    assert classify("blk.0.attn_output.weight").role == "attn.out"
+    # SSM: proyecciones esparcibles vs. núcleo recurrente denso.
+    assert classify("blk.0.ssm_out.weight").role == "ssm.out"
+    assert classify("blk.0.ssm_alpha.weight").role == "ssm.alpha"
+    assert classify("blk.0.ssm_beta.weight").role == "ssm.beta"
+    assert classify("blk.0.ssm_a").role == "ssm.core"
+    assert classify("blk.0.ssm_dt.bias").role == "ssm.core"
+    assert classify("blk.0.ssm_norm.weight").role == "ssm.core"
+    assert classify("blk.0.ssm_conv1d.weight").role == "ssm.core"
+    assert classify("nextn.eh_proj").role == "nextn"
+
+
+def test_roles_esparcibles():
+    """FFN + atención + proyecciones SSM son esparcibles; núcleo S6/norms no."""
+    assert is_sparsifiable("blk.0.ffn_gate.weight")
+    assert is_sparsifiable("blk.0.attn_qkv.weight")
+    assert is_sparsifiable("blk.0.attn_gate.weight")
+    assert is_sparsifiable("blk.0.ssm_out.weight")
+    assert is_sparsifiable("blk.0.ssm_alpha.weight")
+    assert is_sparsifiable("blk.0.ssm_beta.weight")
+    assert not is_sparsifiable("blk.0.ssm_a")
+    assert not is_sparsifiable("blk.0.ssm_dt.bias")
+    assert not is_sparsifiable("blk.0.ssm_conv1d.weight")
+    assert not is_sparsifiable("blk.0.attn_norm.weight")
+    assert not is_sparsifiable("token_embd.weight")
+    assert not is_sparsifiable("output.weight")
+    assert not is_sparsifiable("nextn.eh_proj")
+
+    names = [
+        "blk.0.ffn_gate.weight", "blk.0.attn_qkv.weight", "blk.0.ssm_out.weight",
+        "blk.0.ssm_a", "blk.0.attn_norm.weight", "token_embd.weight",
+    ]
+    assert sparsifiable_tensors(names) == [
+        "blk.0.ffn_gate.weight", "blk.0.attn_qkv.weight", "blk.0.ssm_out.weight",
+    ]
+    assert "ffn.gate" in SPARSIFIABLE_ROLES
+    assert "ssm.core" not in SPARSIFIABLE_ROLES
+
+
+def test_coverage_report_fraccion_esparcible():
+    """La cobertura >90% (FFN+attn+SSM-proj) es el objetivo de Fase 0."""
+    infos = [
+        _FakeInfo("blk.0.ffn_gate.weight", 10_000),
+        _FakeInfo("blk.0.ffn_up.weight", 10_000),
+        _FakeInfo("blk.0.attn_qkv.weight", 5_000),
+        _FakeInfo("blk.0.ssm_out.weight", 3_000),
+        _FakeInfo("blk.0.ssm_a", 100),
+        _FakeInfo("blk.0.attn_norm.weight", 500),
+        _FakeInfo("token_embd.weight", 2_000),
+        _FakeInfo("output.weight", 2_000),
+    ]
+    r = coverage_report(infos)
+    total = 10_000 + 10_000 + 5_000 + 3_000 + 100 + 500 + 2_000 + 2_000
+    esp = 10_000 + 10_000 + 5_000 + 3_000
+    assert r["total_params"] == total
+    assert r["sparsifiable_params"] == esp
+    assert abs(r["coverage"] - esp / total) < 1e-9
+    assert r["params_by_role"]["ssm.out"] == 3_000
+    assert r["params_by_role"]["ssm.core"] == 100
 
 
 def test_seleccion_de_bloques_candidatos():
