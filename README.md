@@ -61,8 +61,8 @@ cd python
 | Fase | Estado |
 |---|---|
 | 0 — Fundación y toolchain | ✅ completada (workspace, MSVC/CMake, OpenCL.lib, `device-info`, smoke tests) |
-| 1 — Referencia NumPy | ⏳ siguiente |
-| 2 — Núcleo Rust (streaming/memoria) | ⏳ |
+| 1 — Referencia NumPy | ✅ completada (cppn, topology, cka, cmaes, reconciler, arch_distance + 14 tests) |
+| 2 — Núcleo Rust (streaming/memoria) | ⏳ siguiente |
 | 3 — Kernels OpenCL 3.0 | ⏳ |
 | 4 — Loop evolutivo integrado | ⏳ |
 | 5 — Hooks del modelo real | ⏳ |
