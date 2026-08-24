@@ -31,6 +31,9 @@ pub const GGML_TYPE_F32: i32 = 0;
 /// (pr_soporte_gguf_disperso_v3.md, reconciliación R1).
 pub const GGML_TYPE_I8: i32 = 24;
 
+/// Alineación de la sección de datos GGUF (hayai usa 32 por defecto).
+pub const GGUF_ALIGN: usize = 32;
+
 /// Tipo de valor GGUF FLOAT32.
 pub const GGUF_TYPE_FLOAT32: u32 = 6;
 /// Tipo de valor GGUF BOOL.
@@ -181,11 +184,23 @@ pub fn write_sparse_gguf(path: &Path, block: &SparseBlock) -> Result<(), String>
         0,
     );
 
-    let data_start = buf.len() as u64;
-    buf[pos_adj..pos_adj + 8].copy_from_slice(&data_start.to_le_bytes());
-    buf[pos_w..pos_w + 8].copy_from_slice(&(data_start + adj_len).to_le_bytes());
+    // Espec GGUF v3: la sección de datos empieza en `align_up(header, ALIGN)` y
+    // los offsets de los tensores son RELATIVOS a ese inicio. Hayai calcula
+    // `data_offset = align_up(header_bytes, alignment)` y lee en
+    // `data_offset + offset`, por lo que este formato es el que hayai espera.
+    while buf.len() % GGUF_ALIGN != 0 {
+        buf.push(0);
+    }
+    let adj_rel = 0u64;
+    let w_rel = ((adj_len as usize).div_ceil(GGUF_ALIGN) * GGUF_ALIGN) as u64;
+    buf[pos_adj..pos_adj + 8].copy_from_slice(&adj_rel.to_le_bytes());
+    buf[pos_w..pos_w + 8].copy_from_slice(&w_rel.to_le_bytes());
 
+    // Datos: adyacencia, padding a GGUF_ALIGN, pesos.
     buf.extend_from_slice(&block.adjacency);
+    while buf.len() % GGUF_ALIGN != 0 {
+        buf.push(0);
+    }
     for w in &block.weights {
         buf.extend_from_slice(&w.to_le_bytes());
     }
@@ -340,12 +355,16 @@ pub fn read_sparse_gguf(path: &Path) -> Result<SparseBlock, String> {
     }
     let adj_off = adj_off.ok_or_else(|| "falta tensor ffn_dag_adjacency".to_string())?;
     let w_off = w_off.ok_or_else(|| "falta tensor ffn_dag_weights".to_string())?;
+    // Espec GGUF v3: los offsets son relativos a la sección de datos alineada.
+    let data_offset = (pos + GGUF_ALIGN - 1) / GGUF_ALIGN * GGUF_ALIGN;
+    let adj_abs = data_offset + adj_off;
+    let w_abs = data_offset + w_off;
     let adjacency = buf
-        .get(adj_off..adj_off + adj_len)
+        .get(adj_abs..adj_abs + adj_len)
         .ok_or("EOF en adyacencia")?
         .to_vec();
     let mut weights = Vec::with_capacity(w_len);
-    let mut p = w_off;
+    let mut p = w_abs;
     for _ in 0..w_len {
         weights.push(read_f32(&buf, &mut p)?);
     }
@@ -383,6 +402,35 @@ mod tests {
         write_sparse_gguf(&path, &block).expect("write");
         let read = read_sparse_gguf(&path).expect("read");
         assert_eq!(read, block);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn formato_compatible_con_hayai() {
+        // Verificación byte-level del contrato con hayai (pr_soporte v3, R1):
+        // el bit-tensor de adyacencia se escribe con tipo GGML I8 = 24 (no 16,
+        // que sería IQ2_XXS) y con offset relativo 0 a la sección de datos.
+        let block = sample_block();
+        let path = std::env::temp_dir().join("saor_hayai_compat.gguf");
+        write_sparse_gguf(&path, &block).expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+
+        let name = ADJACENCY_TENSOR_NAME.as_bytes();
+        let pos = bytes
+            .windows(name.len())
+            .position(|w| w == name)
+            .expect("tensor de adyacencia presente");
+        let info = pos + name.len();
+        let adj_len = block.adjacency.len() as u64;
+        assert_eq!(u32::from_le_bytes(bytes[info..info + 4].try_into().unwrap()), 1);
+        assert_eq!(
+            u64::from_le_bytes(bytes[info + 4..info + 12].try_into().unwrap()),
+            adj_len
+        );
+        let gtype = i32::from_le_bytes(bytes[info + 12..info + 16].try_into().unwrap());
+        assert_eq!(gtype, 24, "el tipo del bit-tensor debe ser I8=24, no IQ2_XXS=16");
+        let offset = u64::from_le_bytes(bytes[info + 16..info + 24].try_into().unwrap());
+        assert_eq!(offset, 0, "offset relativo del primer tensor debe ser 0");
         let _ = std::fs::remove_file(path);
     }
 

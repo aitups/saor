@@ -45,12 +45,17 @@ GGML_TYPE: dict[str, tuple[int, int]] = {
     "I64": (1, 8), "F64": (1, 8),
 }
 
+# Tipos GGML (id -> nombre). Sigue el enum GGML **actual** (llama.cpp moderno /
+# hayai): los IQ ocupan 16-23 e `I8 = 24` (antes `I8 = 16`). Crítico para leer
+# correctamente el bit-tensor `ffn_dag_adjacency` del GGUF disperso de saor.
 GGML_TYPE_BY_ID: dict[int, str] = {
     0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1",
     8: "Q8_0", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K",
-    14: "Q6_K", 15: "Q8_K", 16: "I8", 17: "I16", 18: "I32", 19: "I64",
-    20: "F64", 21: "IQ2_XXS", 22: "IQ2_XS", 23: "IQ3_XXS", 24: "IQ1_S",
-    25: "IQ4_NL", 26: "IQ3_S", 27: "IQ2_S", 28: "IQ4_XS",
+    14: "Q6_K", 15: "Q8_K",
+    16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS", 19: "IQ1_S",
+    20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS",
+    24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64",
+    29: "IQ1_M", 30: "BF16", 34: "TQ1_0", 35: "TQ2_0",
 }
 
 
@@ -265,10 +270,12 @@ def read_sparse_block(path: str | Path) -> SparseBlock:
 
     adj = by_name["ffn_dag_adjacency"]
     w = by_name["ffn_dag_weights"]
+    # Espec GGUF v3: offsets relativos a la sección de datos alineada a 32.
+    data_offset = (h.header_end + 31) // 32 * 32
     with open(path, "rb") as f:
-        f.seek(adj.offset)
+        f.seek(data_offset + adj.offset)
         adj_bytes = f.read(adj.nbytes())
-        f.seek(w.offset)
+        f.seek(data_offset + w.offset)
         w_raw = f.read(w.nbytes())
 
     return SparseBlock(

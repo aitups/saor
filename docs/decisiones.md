@@ -80,6 +80,35 @@
   `C:\Windows\System32\OpenCL.dll` (123 exports) en `.local\windows-lib\`, y
   `scripts\build_dev.bat` lo añade a `LIB`.
 
+## D11 — Interop del GGUF disperso con hayai (v0.2.3, commit 16cda2017)
+- hayai v0.2.3 añade los ops `FfnDagAdjacency` (`ffn_dag_adjacency`, I8
+  LSB-first) y `FfnDagWeights` (`ffn_dag_weights`, F32 i-mayor) + lectura de
+  metadatos `saor.*` — espejo exacto del formato de `saor-streamer`.
+- **Correcciones de compatibilidad aplicadas (reconciliación R1):**
+  1. `GGML_TYPE_I8` pasa de `16` a `24` (el enum GGML actual asigna 16 a
+     `IQ2_XXS`; hayai ya lo había corregido en `69a6b83`).
+  2. `write_sparse_gguf` ahora **alinea la cabecera a 32** y escribe **offsets
+     relativos** a la sección de datos (espec GGUF v3 / `tensor_abs_offset =
+     data_offset + offset` de hayai); el reader (Rust y Python) computa
+     `data_offset = align_up(header, 32)`.
+  3. `gguf_audit.py` usa el enum GGML nuevo (I8=24, IQ 16–23).
+- **Validación end-to-end:** `hayai plan --model <gguf saor>` → `known_ops:
+  FfnDagAdjacency, FfnDagWeights`, `status: OK`. `load_sparse_dag` lee
+  `d_in/d_out/tau/adjacency/weights/genome` correctamente y `spmm_csr ==
+  spmm_dense` (max_err 0).
+- **Compilación de hayai en Windows:** `nightly-x86_64-pc-windows-gnu` +
+  MinGW (msys64) + `cl3` con `features=["dynamic"]` (OpenCL cargado en runtime,
+  sin `OpenCL.lib`).
+
+## D12 — Modelos objetivo (Fase 7)
+- **ALIA-40b** (BSC-LT): arquitectura **llama** (densa). GGUF Q4_K_M:
+  `mradermacher/ALIA-40b-GGUF/ALIA-40b.Q4_K_M.gguf` (~22 GB).
+- **Qwen3.8-27B** (Qwen): arquitectura **qwen3.5 híbrida** (gated-DeltaNet +
+  attention + MTP + multimodal). GGUF Q4_K_M:
+  `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf` (~16 GB).
+- Descarga a `models/` (script `python/scripts/download_models.py`).
+
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
