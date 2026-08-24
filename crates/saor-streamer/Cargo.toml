@@ -8,3 +8,4 @@ description = "Motor de streaming capa a capa con doble buffer, memoria pinned, 
 [dependencies]
 half.workspace = true
 serde.workspace = true
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Memory"] }
