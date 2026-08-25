@@ -21,7 +21,7 @@ import numpy as np
 
 from saor_orchestrator import SaorEngineClient
 from saor_orchestrator.reference.cka import centered_cka
-from saor_orchestrator.reference.cppn import CppnGenome
+from saor_orchestrator.reference.cppn import CPPN_INPUT_DIM, HIDDEN, CppnGenome
 from saor_orchestrator.reference.topology import dense_row_major, instantiate
 
 
@@ -50,6 +50,13 @@ def validate_report(report: dict[str, Any], tolerance: float = 1e-3) -> dict[str
     x = np.asarray(data["x"], np.float32).reshape(batch, d_in)
 
     # --- Referencia NumPy ---
+    expected = CPPN_INPUT_DIM * HIDDEN + HIDDEN * HIDDEN + 2 * HIDDEN + HIDDEN + HIDDEN + 2
+    if genome.size != expected:
+        raise RuntimeError(
+            f"binario saor-engine stale: genoma de {genome.size} f32 "
+            f"(se esperaban {expected} con el sustrato de {CPPN_INPUT_DIM} dims); "
+            "recompilar saor-engine para validar los kernels"
+        )
     g = CppnGenome.from_flatten(genome)
     topo = instantiate(g, d_in, d_out, tau)
     w_ref = dense_row_major(topo, d_in, d_out)  # [d_out, d_in]

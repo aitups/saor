@@ -32,8 +32,8 @@ pub fn cmd(args: &[String]) -> ExitCode {
     let mut genome_path: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut identity = false;
-    /// El archivo `--weights` viene en el layout del dump `[d_out, d_in]`
-    /// fila-mayor y debe reordenarse a i-mayor (conn = i*d_out+j).
+    // El archivo `--weights` viene en el layout del dump `[d_out, d_in]`
+    // fila-mayor y debe reordenarse a i-mayor (conn = i*d_out+j).
     let mut dense_dump = false;
     let mut i = 0;
     while i < args.len() {

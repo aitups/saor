@@ -35,11 +35,12 @@ GENOME_ORDER = "w0|b0|w1|b1|w2|b2"
 
 # --------------------------------------------------------------------- sustrato
 
-def build_substrate(d_in: int, d_out: int) -> np.ndarray:
-    """v_in [N, 8] con N = d_in*d_out, fila-mayor `k = i*d_out + j`.
+def build_substrate(d_in: int, d_out: int, y_layer: float = 0.0) -> np.ndarray:
+    """v_in [N, 9] con N = d_in*d_out, fila-mayor `k = i*d_out + j`.
 
     Paridad exacta con `saor_domain::cppn::input_vector` (y con el kernel
-    `cppn_decode.cl`): x_i=-1.0, x_j=1.0, y_i/y_j lineales en [-1,1].
+    `cppn_decode.cl`): x_i=-1.0, x_j=1.0, y_i/y_j lineales en [-1,1] y la
+    coordenada de profundidad `y_layer` (Vía B) como columna 9.
     """
     n = d_in * d_out
     i = np.arange(d_in)[:, None].repeat(d_out, axis=1).ravel()
@@ -56,6 +57,7 @@ def build_substrate(d_in: int, d_out: int) -> np.ndarray:
             y_j - y_i,
             np.sin(np.pi * y_i),
             np.cos(np.pi * y_j),
+            y_layer * np.ones(n),
         ],
         axis=1,
     ).astype(np.float32)

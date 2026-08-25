@@ -60,7 +60,7 @@ pub fn cmd(args: &[String]) -> ExitCode {
     let mut active = 0u32;
     for t in 0..trials {
         let t0 = Instant::now();
-        let res = engine.cppn_decode(&genome, d_in, d_out, 0.42);
+        let res = engine.cppn_decode(&genome, d_in, d_out, 0.42, 0, 1);
         match res {
             Ok((_w, _adj, act)) => {
                 active = act;

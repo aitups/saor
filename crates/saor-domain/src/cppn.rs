@@ -6,8 +6,8 @@
 
 use nalgebra::DMatrix;
 
-/// Dimensiones del vector de entrada de la CPPN (8 dims).
-pub const CPPN_INPUT_DIM: usize = 8;
+/// Dimensiones del vector de entrada de la CPPN (9 dims: 8 espaciales + y_layer).
+pub const CPPN_INPUT_DIM: usize = 9;
 /// Tamaño nominal del genoma (~32K).
 pub const GENOME_SIZE: usize = 32 * 1024;
 
@@ -36,10 +36,29 @@ impl Activation {
     }
 }
 
-/// Genera el vector de entrada de 8 dims para el par `(i, j)` según v4.
+/// Coordenada de capa `y_layer ∈ [-1, 1]` (centro de banda): la capa `layer` de
+/// `n_layers` ocupa el centro de su banda en el eje global de profundidad. Con
+/// `n_layers <= 1` devuelve 0.0 (compatibilidad con la decodificación mono-bloque).
+pub fn layer_coord(layer: usize, n_layers: usize) -> f32 {
+    if n_layers <= 1 {
+        0.0
+    } else {
+        -1.0 + 2.0 * (layer as f32 + 0.5) / n_layers as f32
+    }
+}
+
+/// Genera el vector de entrada de 9 dims para el par `(i, j)` de una capa dada.
 ///
-/// Coordenadas de capa A (`x = -1`) y B (`x = +1`) en `[-1, 1]`.
-pub fn input_vector(d_in: usize, d_out: usize, i: usize, j: usize) -> [f32; CPPN_INPUT_DIM] {
+/// Coordenadas de capa A (`x = -1`) y B (`x = +1`) en `[-1, 1]`, más la
+/// coordenada de profundidad `y_layer ∈ [-1, 1]` (Vía B: un solo CPPN para
+/// todas las capas del modelo).
+pub fn input_vector(
+    d_in: usize,
+    d_out: usize,
+    i: usize,
+    j: usize,
+    y_layer: f32,
+) -> [f32; CPPN_INPUT_DIM] {
     let y_i = if d_in > 1 {
         -1.0 + 2.0 * i as f32 / (d_in - 1) as f32
     } else {
@@ -63,6 +82,7 @@ pub fn input_vector(d_in: usize, d_out: usize, i: usize, j: usize) -> [f32; CPPN
         dy,
         (std::f32::consts::PI * y_i).sin(),
         (std::f32::consts::PI * y_j).cos(),
+        y_layer,
     ]
 }
 
@@ -252,18 +272,19 @@ mod tests {
 
     #[test]
     fn input_vector_respeta_rangos() {
-        let v = input_vector(4, 4, 0, 3);
+        let v = input_vector(4, 4, 0, 3, 0.5);
         assert_eq!(v[0], -1.0);
         assert_eq!(v[2], 1.0);
         assert!(v[1] >= -1.0 && v[1] <= 1.0);
         assert!(v[3] >= -1.0 && v[3] <= 1.0);
         assert_eq!(v[4], 2.0); // dx = x_j - x_i
+        assert_eq!(v[8], 0.5); // y_layer
     }
 
     #[test]
     fn evaluacion_es_determinista_y_en_rango_l() {
         let genome = CppnGenome::zeros();
-        let (_, l) = genome.evaluate(&input_vector(8, 8, 2, 5));
+        let (_, l) = genome.evaluate(&input_vector(8, 8, 2, 5, 0.0));
         // Con genoma de ceros: b2[(1,0)] = 0 -> sigmoide(0) = 0.5
         assert!((l - 0.5).abs() < 1e-6);
         assert!(l > 0.0 && l < 1.0);
@@ -274,7 +295,7 @@ mod tests {
         let genome = CppnGenome::zeros();
         assert_eq!(
             genome.param_count(),
-            8 * CppnGenome::HIDDEN
+            CPPN_INPUT_DIM * CppnGenome::HIDDEN
                 + CppnGenome::HIDDEN * CppnGenome::HIDDEN
                 + CppnGenome::HIDDEN * 2
                 + CppnGenome::HIDDEN

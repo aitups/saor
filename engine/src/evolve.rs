@@ -268,13 +268,13 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
             // (D17); CPPN puro: matriz densa enmascarada + CSR en host.
             let (h1, sparsity) = if params.teacher_copy {
                 let (adj, active) =
-                    engine.cppn_decode_adjacency(&f, params.d_in, params.d_out, tau)?;
+                    engine.cppn_decode_adjacency(&f, params.d_in, params.d_out, tau, 0, 1)?;
                 let h1 = engine.spmm_csr_teacher(&x, &w0, &adj, params.d_in, params.d_out)?;
                 let sp = 1.0 - active as f32 / (params.d_in * params.d_out) as f32;
                 (h1, sp)
             } else {
                 let (w_dense, adj, active) =
-                    engine.cppn_decode(&f, params.d_in, params.d_out, tau)?;
+                    engine.cppn_decode(&f, params.d_in, params.d_out, tau, 0, 1)?;
                 let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
                 let (rp, ci, vals) = topo.to_csr(params.d_in, params.d_out);
                 let h1 = engine.spmm_csr(&x, &rp, &ci, &vals, params.d_in, params.d_out)?;
@@ -349,12 +349,14 @@ pub fn run(params: &EvolveParams) -> Result<EvolveOutcome, String> {
             params.d_in,
             params.d_out,
             best.tau,
+            0,
+            1,
         )?;
         let topo = topology_from_dense(&w0, &adj, params.d_in, params.d_out);
         (adj, topo.weights)
     } else {
         let (w_dense, adj, _) =
-            engine.cppn_decode(&best_flat, params.d_in, params.d_out, best.tau)?;
+            engine.cppn_decode(&best_flat, params.d_in, params.d_out, best.tau, 0, 1)?;
         let topo = topology_from_dense(&w_dense, &adj, params.d_in, params.d_out);
         (adj, topo.weights)
     };

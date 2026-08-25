@@ -117,6 +117,19 @@ impl Topology {
 /// * `d_in`, `d_out` — dimensiones del bloque (con reconciliación previa).
 /// * `tau` — umbral de esparsidad dinámico (evolucionado por CMA-ES).
 pub fn instantiate(genome: &CppnGenome, d_in: usize, d_out: usize, tau: f32) -> Topology {
+    instantiate_layer(genome, d_in, d_out, tau, 0.0)
+}
+
+/// Igual que [`instantiate`] pero para una capa concreta de la decodificación
+/// global (Vía B): `y_layer ∈ [-1, 1]` es la coordenada de profundidad que
+/// parametriza la topología de cada capa (un solo CPPN para todo el modelo).
+pub fn instantiate_layer(
+    genome: &CppnGenome,
+    d_in: usize,
+    d_out: usize,
+    tau: f32,
+    y_layer: f32,
+) -> Topology {
     let total = d_in * d_out;
     let bits_len = total.div_ceil(8);
     let mut adjacency_bits = vec![0u8; bits_len];
@@ -124,7 +137,7 @@ pub fn instantiate(genome: &CppnGenome, d_in: usize, d_out: usize, tau: f32) -> 
 
     for i in 0..d_in {
         for j in 0..d_out {
-            let v = crate::cppn::input_vector(d_in, d_out, i, j);
+            let v = crate::cppn::input_vector(d_in, d_out, i, j, y_layer);
             let (w, l) = genome.evaluate(&v);
             let idx = i * d_out + j;
             if l > tau {

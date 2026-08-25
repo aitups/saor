@@ -41,7 +41,7 @@ def test_evaluacion_determinista_y_l_en_rango():
 def test_tamano_genoma():
     assert (
         CppnGenome().param_count
-        == 8 * HIDDEN + HIDDEN * HIDDEN + HIDDEN * 2 + HIDDEN + HIDDEN + 2
+        == CPPN_INPUT_DIM * HIDDEN + HIDDEN * HIDDEN + HIDDEN * 2 + HIDDEN + HIDDEN + 2
     )
 
 

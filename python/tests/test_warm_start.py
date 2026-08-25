@@ -9,7 +9,12 @@ sobre FFNs reales (pesos entrenados sin estructura suave en (i,j)); la
 import numpy as np
 
 from saor_orchestrator.reference.cka import centered_cka, gram_matrix
-from saor_orchestrator.reference.cppn import CppnGenome, HIDDEN, input_vector
+from saor_orchestrator.reference.cppn import (
+    CPPN_INPUT_DIM,
+    HIDDEN,
+    CppnGenome,
+    input_vector,
+)
 from saor_orchestrator.reference.topology import dense_row_major, instantiate
 from scripts.warm_start import (
     align_l_output,
@@ -34,13 +39,13 @@ def test_substrate_matches_input_vector():
             np.testing.assert_allclose(
                 v[k], input_vector(d_in, d_out, i, j), rtol=0, atol=1e-6
             )
-    assert v.shape == (d_in * d_out, 8)
+    assert v.shape == (d_in * d_out, CPPN_INPUT_DIM)
 
 
 def test_align_l_output_fija_rho():
     """w2[1,:]=0 y b2[1]=logit(rho) -> l_ij = rho para todo par."""
     rng = np.random.default_rng(1)
-    flat = rng.normal(0, 1, 450).astype(np.float32)
+    flat = rng.normal(0, 1, CppnGenome().param_count).astype(np.float32)
     rho = 0.37
     g = align_l_output(flat, rho)
     assert g.shape == flat.shape

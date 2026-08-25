@@ -171,6 +171,8 @@ impl ClEngine {
         d_in: usize,
         d_out: usize,
         tau: f32,
+        layer: usize,
+        n_layers: usize,
     ) -> Result<(Vec<f32>, Vec<u8>, u32), String> {
         let total = d_in * d_out;
         let n_words = total.div_ceil(32);
@@ -189,9 +191,11 @@ impl ClEngine {
         kernel.set_arg(1, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
         kernel.set_arg(2, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
         kernel.set_arg(3, &tau).map_err(|e| format!("arg tau: {e}"))?;
-        kernel.set_arg(4, &w).map_err(|e| format!("arg w: {e}"))?;
-        kernel.set_arg(5, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
-        kernel.set_arg(6, &act).map_err(|e| format!("arg active: {e}"))?;
+        kernel.set_arg(4, &(layer as i32)).map_err(|e| format!("arg layer: {e}"))?;
+        kernel.set_arg(5, &(n_layers as i32)).map_err(|e| format!("arg n_layers: {e}"))?;
+        kernel.set_arg(6, &w).map_err(|e| format!("arg w: {e}"))?;
+        kernel.set_arg(7, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
+        kernel.set_arg(8, &act).map_err(|e| format!("arg active: {e}"))?;
         self.enqueue_chunked(&kernel, total, CPPN_DECODE_CHUNK)?;
 
         // Kernel 2: empaquetado u32 -> bit-tensor u8 (LSB-first).
@@ -216,6 +220,8 @@ impl ClEngine {
         d_in: usize,
         d_out: usize,
         tau: f32,
+        layer: usize,
+        n_layers: usize,
     ) -> Result<(Vec<u8>, u32), String> {
         let total = d_in * d_out;
         let n_words = total.div_ceil(32);
@@ -232,8 +238,10 @@ impl ClEngine {
         kernel.set_arg(1, &(d_in as i32)).map_err(|e| format!("arg d_in: {e}"))?;
         kernel.set_arg(2, &(d_out as i32)).map_err(|e| format!("arg d_out: {e}"))?;
         kernel.set_arg(3, &tau).map_err(|e| format!("arg tau: {e}"))?;
-        kernel.set_arg(4, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
-        kernel.set_arg(5, &act).map_err(|e| format!("arg active: {e}"))?;
+        kernel.set_arg(4, &(layer as i32)).map_err(|e| format!("arg layer: {e}"))?;
+        kernel.set_arg(5, &(n_layers as i32)).map_err(|e| format!("arg n_layers: {e}"))?;
+        kernel.set_arg(6, &a_words).map_err(|e| format!("arg adj_words: {e}"))?;
+        kernel.set_arg(7, &act).map_err(|e| format!("arg active: {e}"))?;
         self.enqueue_chunked(&kernel, total, CPPN_DECODE_CHUNK)?;
 
         let mut a = self.buffer::<u8>(n_bytes)?;

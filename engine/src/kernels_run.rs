@@ -93,7 +93,8 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
     let w0 = random_vec(params.d_out * params.d_in, params.seed + 2); // profesor denso
 
     // --- Kernels OpenCL ---
-    let (w_dense, adjacency, active) = engine.cppn_decode(&flat, params.d_in, params.d_out, params.tau)?;
+    let (w_dense, adjacency, active) =
+        engine.cppn_decode(&flat, params.d_in, params.d_out, params.tau, 0, 1)?;
     let y_dense = engine.spmm_dense(&x, &w_dense, params.d_in, params.d_out)?;
 
     let topo = saor_domain::topology::instantiate(&genome, params.d_in, params.d_out, params.tau);

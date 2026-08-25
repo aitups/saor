@@ -1,8 +1,9 @@
 """CPPN (Red de Patrones de Composición) — genoma indirecto desacoplado.
 
 Referencia NumPy de `saor_domain::cppn` (misma semántica: sustrato 2D en
-[-1,1], vector de entrada de 8 dims, dos capas ocultas de 64 con activaciones
-heterogéneas y salida `(w_ij, l_ij)` con `l_ij` pasada por sigmoide).
+[-1,1], vector de entrada de 9 dims — 8 espaciales + `y_layer` de profundidad
+(Vía B) — dos capas ocultas de 16 con activaciones heterogéneas y salida
+`(w_ij, l_ij)` con `l_ij` pasada por sigmoide).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from typing import Sequence
 
 import numpy as np
 
-CPPN_INPUT_DIM = 8
+CPPN_INPUT_DIM = 9
 # 16+16 ocultos (alineado con saor_domain::cppn y el kernel OpenCL): reduce la
 # presión de registros del decodificador y permite escalar a bloques reales
 # (89M–201M conexiones).
@@ -42,10 +43,21 @@ def apply_activation(names: Sequence[str], x: np.ndarray) -> np.ndarray:
     return out
 
 
-def input_vector(d_in: int, d_out: int, i: int, j: int) -> np.ndarray:
-    """Vector de entrada de 8 dims para el par `(i, j)` (especificación v4).
+def layer_coord(layer: int, n_layers: int) -> float:
+    """Coordenada de profundidad `y_layer ∈ [-1, 1]` (centro de banda).
 
-    Capa A (`x=-1`) y B (`x=+1`) con coordenada `y` uniforme en `[-1, 1]`.
+    Con `n_layers <= 1` devuelve 0.0 (compatibilidad mono-bloque).
+    """
+    if n_layers <= 1:
+        return 0.0
+    return -1.0 + 2.0 * (layer + 0.5) / n_layers
+
+
+def input_vector(d_in: int, d_out: int, i: int, j: int, y_layer: float = 0.0) -> np.ndarray:
+    """Vector de entrada de 9 dims para el par `(i, j)` de una capa dada.
+
+    Capa A (`x=-1`) y B (`x=+1`) con coordenada `y` uniforme en `[-1, 1]`, más
+    la coordenada de profundidad `y_layer` (Vía B: un solo CPPN por modelo).
     """
     y_i = -1.0 + 2.0 * i / (d_in - 1) if d_in > 1 else 0.0
     y_j = -1.0 + 2.0 * j / (d_out - 1) if d_out > 1 else 0.0
@@ -60,6 +72,7 @@ def input_vector(d_in: int, d_out: int, i: int, j: int) -> np.ndarray:
             y_j - y_i,
             np.sin(np.pi * y_i),
             np.cos(np.pi * y_j),
+            y_layer,
         ],
         dtype=np.float32,
     )
@@ -144,3 +157,71 @@ class CppnGenome:
         out = self.b2[:, 0] + self.w2 @ h1
         w, l_raw = float(out[0]), float(out[1])
         return w, 1.0 / (1.0 + np.exp(-l_raw))
+
+    def decode_global(
+        self,
+        d_in: int,
+        d_out: int,
+        tau: float,
+        n_layers: int,
+        dense_density: float | None = None,
+    ) -> tuple[list[float], np.ndarray]:
+        """Decodifica la topología de **todas las capas** con un solo CPPN (Vía B).
+
+        Cada capa se evalúa con su coordenada de profundidad `y_layer`; el
+        resultado es una topología heterogénea por capa inducida por el mismo
+        genoma. Devuelve `(densidades_por_capa, adjacency)` donde `adjacency`
+        es `[n_layers, ceil(d_in*d_out/8)]` en el formato `ffn_dag_adjacency`.
+
+        Si `dense_density` se da, se reescala la densidad media global al
+        objetivo (frontera de Pareto) moviendo el umbral efectivo.
+        """
+        total = d_in * d_out
+        n_bytes = (total + 7) // 8
+        adjs = np.zeros((n_layers, n_bytes), np.uint8)
+        # Sustrato vectorizado: todas las conexiones de una capa a la vez.
+        ii, jj = np.meshgrid(np.arange(d_in), np.arange(d_out), indexing="ij")
+        yi = -1.0 + 2.0 * ii.astype(np.float32) / (d_in - 1) if d_in > 1 else np.zeros_like(ii, np.float32)
+        yj = -1.0 + 2.0 * jj.astype(np.float32) / (d_out - 1) if d_out > 1 else np.zeros_like(jj, np.float32)
+        base = np.stack(
+            [
+                np.full_like(yi, -1.0),  # x_i
+                yi,
+                np.full_like(yi, 1.0),   # x_j
+                yj,
+                np.full_like(yi, 2.0),   # dx
+                yj - yi,
+                np.sin(np.pi * yi),
+                np.cos(np.pi * yj),
+            ],
+            axis=-1,
+        )  # [d_in, d_out, 8]
+        densities: list[float] = []
+        for layer in range(n_layers):
+            yl = np.float32(layer_coord(layer, n_layers))
+            v = np.concatenate([base, np.full_like(base[..., :1], yl)], axis=-1)
+            flat = v.reshape(-1, CPPN_INPUT_DIM)
+            # Activaciones por-neurona aplicadas por columna ([N, H]).
+            h0 = np.empty((flat.shape[0], HIDDEN), np.float32)
+            pre0 = self.b0[:, 0] + flat @ self.w0.T
+            for name in np.unique(self.acts0):
+                cols = np.where(self.acts0 == name)[0]
+                h0[:, cols] = _apply(str(name), pre0[:, cols])
+            h1 = np.empty((flat.shape[0], HIDDEN), np.float32)
+            pre1 = self.b1[:, 0] + h0 @ self.w1.T
+            for name in np.unique(self.acts1):
+                cols = np.where(self.acts1 == name)[0]
+                h1[:, cols] = _apply(str(name), pre1[:, cols])
+            out = self.b2[:, 0] + h1 @ self.w2.T
+            l = 1.0 / (1.0 + np.exp(-out[:, 1]))
+            active_mask = l > tau
+            active = int(active_mask.sum())
+            bits = np.nonzero(active_mask.reshape(d_in, d_out))
+            for idx in range(len(bits[0])):
+                bit = bits[0][idx] * d_out + bits[1][idx]
+                adjs[layer, bit // 8] |= 1 << (bit % 8)
+            densities.append(active / total)
+        if dense_density is not None and densities and sum(densities) > 0:
+            k = np.clip(dense_density / (sum(densities) / n_layers), 1e-3, 1e3)
+            densities = [min(1.0, d * k) for d in densities]
+        return densities, adjs
