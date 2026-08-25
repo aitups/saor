@@ -318,6 +318,49 @@
   evaluador con CSR **respaldado en disco (mmap)** o el `StreamingGenerator` con
   FFN disperso (formato embebido) — mismo trabajo pendiente de la Fase 3.
 
+## D21 — StreamingGenerator con FFN disperso embebido + sustrato CPPN global (Vía B)
+- **Decisión (dos frentes en paralelo):**
+  1. **hayai — `StreamingGenerator` con FFN disperso (Fase 3 en el path de
+     producción).** El evaluador disk-backed se descarta como transitorio; se
+     adelanta la ruta real: el `StreamingGenerator` (path por defecto de
+     `hayai generate`, sin `--dev-mmap`) carga el bloque disperso embebido
+     (D16) y ejecuta el FFN vía CSR en CPU.
+  2. **saor — sustrato CPPN global con coordenada de capa `y_layer` (Vía B).**
+- **Motivación:** (1) resolver el OOM de ALIA/Qwen en el camino de producción y
+  cerrar la Fase 3 de una vez; (2) codificar la hipótesis de "compresión variable
+  por modelo" en el propio genoma: un solo CPPN genera la topología de TODAS las
+  capas, parametrizada por la profundidad.
+- **Impacto (hayai):**
+  - `LayerWeightPack` gana `gate_csr/up_csr/down_csr`; `load_embedded_csr` lee el
+    bloque D16 desde el catálogo (tensores `ffn_dag_adjacency/ffn_dag_weights` +
+    metadatos `saor.*`).
+  - `load_layer_pack`, `load_layer_pack_into`, `layer_pack_views_from_base`,
+    `layer_pack_nbytes` y `rebind_views` toleran FFN ausentes (tensor denso
+    sustituido → CSR + layout 0 bytes).
+  - `forward_inner`/`forward_macro_chunk` ejecutan `run_ffn_block` (spmm CSR en
+    CPU) cuando el pack trae bloques dispersos; `prefill_wave.rs` hace lo mismo
+    para el prefill (gate/up CSR en el begin, down CSR en el finish).
+  - **Validación:** los logits del embebido denso (identidad) vs original difieren
+    en `max_abs = 5.5e-5` (6×49152 logits); el modelo realmente disperso (43%)
+    genera end-to-end con RSS acotado (74 MiB); 77 tests Rust verdes.
+- **Impacto (saor — Vía B):**
+  - `CPPN_INPUT_DIM 8→9`: el vector de entrada gana `y_layer ∈ [-1,1]` (centro
+    de banda de cada capa en el eje de profundidad). Genoma 450→466 (Rust) /
+    4930 f32 aplanados; kernel `cppn_decode.cl` y `cppn_decode_adj` reciben
+    `layer`/`n_layers`.
+  - `instantiate_layer` y `build_substrate(y_layer)` para decodificar por capa;
+    `CppnGenome.decode_global` (NumPy vectorizado) para un modelo completo.
+  - **Validación:** un CPPN aleatorio sobre SmolLM2 (30 capas, 576→1536) induce
+    densidad por capa tipo campana (0.27→0.51, std 0.072, heterogeneidad 0.175):
+    las capas medias más densas, las exteriores más esparsas — la curva de
+    tolerancia por profundidad que ALIA ya mostró, ahora expresable en el genoma.
+  - `saor-engine` no se puede enlazar en esta máquina (falta `OpenCL.lib` del
+    `OCL_SDK_Light`); el test de validación cruzada OpenCL salta (skip) ante un
+    binario stale hasta recompilar en la máquina con OCL.
+- **Pendiente Vía B:** loop CMA-ES global (subespacio activo sobre el genoma
+  global) con fitness Pareto `KL_global`/`D_arch_global` en SmolLM2 y ALIA;
+  el `make-block`/`embed` debe aceptar la topología por capa del CPPN global.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
