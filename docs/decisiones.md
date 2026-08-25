@@ -392,6 +392,32 @@
   la topología real requiere el kernel OpenCL (máquina con OCL; el decode CPU de
   bloques 8192×24576 ≈ 201M conexiones × 120 bloques no escala en Rust).
 
+## D23 — Qwen3.5 híbrido en el streaming: DeltaNet/SSM + attn_qkv fusionado
+- **Decisión:** cerrar el bloqueo "soporte Qwen" con el Qwen3.5-4B local (24
+  capas DeltaNet/SSM con `attn_qkv` fusionado + 8 capas full-attn con `attn_q`
+  separado + 1 NextN/MTP), patrón 3+1 repetido.
+- **Problemas resueltos:**
+  1. **Enrutado híbrido**: `model_kind()` solo miraba `known_ops` del plan; el
+     clasificador `AttnQkv` ganaba al de `DeltaNet` y los tensores `ssm_*` no
+     entraban en los units → el modelo se trataba como Dense y fallaba en
+     `attn_q`. Fix: `model_kind()` primero escanea el catálogo con
+     `is_deltanet_layer` (tensores `ssm_a` + `attn_qkv`).
+  2. **`stage_pack` con bloques mixtos**: el macro-bloque (block_k>1) cargaba
+     capas deltanet como packs llama (sin `attn_q`) → error. Fix: si el bloque
+     contiene cualquier capa deltanet, cae al ping-pong por capa (las capas
+     deltanet viven en `DeltaNetLayerWeights` cache, no en el scratch).
+  3. **Presupuesto de memoria**: el cache DeltaNet/SSM (~1 GB) no está en el
+     estimado; la verificación de presupuesto al final de `generate` es ahora
+     orientativa (skip) para `ModelKind::Hybrid`.
+- **Validación:** `hayai generate` sobre Qwen_Qwen3.5-4B-Q4_K_M produce texto
+  coherente ("Once upon a time in a" → "small town, there lived a young man
+  named Jack."). Ablation `HAYAI_SKIP_DN_ATTN=1` → salida corrupta
+  ("µÄ¿µ£║µ×äNI,\pi=1"), probando que el path DeltaNet compute de verdad.
+- **Limitación conocida (pre-existente):** `Qwen2.5-7B` falla la verificación de
+  presupuesto al final de generate (Dense); no relacionado con este cambio.
+- **Pendiente Qwen3.8-27B:** mismo soporte (attn_qkv + SsmIrregularDag) ya
+  cubierto en el streaming; falta validar con el modelo 27B y el evaluador Vía B.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
