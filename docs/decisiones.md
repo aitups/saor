@@ -301,6 +301,22 @@
   descubre la frontera real; queda por ver si ALIA/Qwen (modelos grandes con más
   redundancia) ofrecen una frontera más favorable. Scripts:
   `sensitivity_map.py`, `hetero_probe.py`, `pareto_evolve.py`.
+- **Fix D20b (D_arch global):** `eval_sparse` reportaba el promedio de esparsidad
+  solo sobre las capas esparsas; ahora el denominador es **todos los parámetros
+  FFN del modelo**. (Los valores KL eran correctos.)
+- **Frontera de ALIA-40b (medida con `eval_sparse`, poda por magnitud del gate):**
+  - capa 0 @ 0.4 → KL **0.32**; **capa 24 @ 0.4 → KL 0.0009** (¡casi nula!);
+  - **16 capas medias (16–31) gate @ 0.4 → KL 0.037** (D_arch global 0.044).
+  - La heterogeneidad de ALIA es MUCHO más pronunciada que la de SmolLM2: las
+    capas medias de un modelo 40B toleran esparsidad alta con KL despreciable.
+    Valida la hipótesis del usuario: "en algunos modelos implicará compresión
+    del 80% y en otros del 2%" — la optimización topológica es específica del
+    modelo.
+- **Limitación de memoria (próximo paso):** el evaluador construye CSRs en RAM
+  (~1 GB/bloque a sp 0.4); el FFN completo de 16 capas de ALIA (48 CSR ≈ 48 GB)
+  hace OOM. Para la barrida completa de la frontera de ALIA se necesita un
+  evaluador con CSR **respaldado en disco (mmap)** o el `StreamingGenerator` con
+  FFN disperso (formato embebido) — mismo trabajo pendiente de la Fase 3.
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
