@@ -465,6 +465,28 @@
   (135M vs 4B). Esparcir distribuidamente (todas las capas) gana mucho frente a
   concentrar en pocas capas a igual D_arch.
 
+## D26 — Frontera Qwen3.5-4B completa (todas las capas) + fix de embed_sparse
+- **Fix de `embed_sparse`:** solo se reemplazan los bloques con `sp > 0`. Antes
+  reemplazaba también up/down (sp=0) con CSR F32 denso — inflaba el modelo
+  (10.3→5.1 GB) y cambiaba la numerica Q4→F32 innecesariamente.
+- **Caché de orden de magnitud:** el sort por |w| es invariante a la esparsidad;
+  `embed_sparse` lo escribe una vez (`order.{layer}.{block}.bin`) y lo reusa en
+  cada punto del barrido (~9 min el primero, <1 min los siguientes).
+- **Frontera Qwen3.5-4B completa (gate de TODAS las capas, poda por magnitud):**
+  | sp | D_arch | KL |
+  |---|---|---|
+  | 0.10 | 0.033 | 0.107 |
+  | 0.20 | 0.067 | 0.296 |
+  | 0.30 | 0.100 | 0.762 |
+  | 0.40 | 0.133 | 2.707 |
+  - **Frontera factible: D_arch ≈ 0.085 @ KL 0.50** (~3.4× más compresible que
+    SmolLM2, que da D_arch ~0.025 @ KL 0.50 uniforme).
+  - La KL crece super-lineal con D_arch (0.11 → 0.30 → 0.76 → 2.71 para pasos
+    lineales de 0.033) — el presupuesto de KL limita D_arch de forma agresiva.
+- **ALIA:** punto medido en la máquina del usuario (`alia_eval5`): 12 capas
+  esparsas → D_arch 0.058 @ KL 0.073 (tolerancia altísima en capas medias).
+  El `alia_emb2.gguf` (23 GB) se movió a `d:\Documents\pySrc\.scratch`.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).

@@ -30,13 +30,30 @@ fn read_f32_bin(path: &std::path::Path) -> Result<Vec<f32>, String> {
 
 /// Poda por magnitud del gate del profesor: conserva la fracción (1-sp) de mayor
 /// |w|; devuelve el bit-tensor (i-mayor) y los pesos activos en orden de escaneo.
-fn magnitude_prune(w: &[f32], d_in: usize, d_out: usize, sp: f32) -> (Vec<u8>, Vec<f32>) {
+///
+/// Con `order_cache` (índices ya ordenados por |w| desc, escritos por
+/// `write_order_cache`) el sort se omite: el orden de magnitud es invariante a
+/// la esparsidad, así un barrido de frontera reusa el mismo orden en cada punto.
+fn magnitude_prune(
+    w: &[f32],
+    d_in: usize,
+    d_out: usize,
+    sp: f32,
+    order_cache: Option<&[u32]>,
+) -> (Vec<u8>, Vec<f32>) {
     let total = d_in * d_out;
     let keep = (((1.0 - sp) * total as f32) as usize).min(total);
-    let mut order: Vec<usize> = (0..total).collect();
-    order.sort_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
+    let mut order: Vec<usize> = match order_cache {
+        Some(c) if c.len() == total => c.iter().map(|&i| i as usize).collect(),
+        _ => {
+            let mut o: Vec<usize> = (0..total).collect();
+            o.sort_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
+            o
+        }
+    };
+    order.truncate(keep);
     let mut active = vec![false; total];
-    for &idx in order.iter().take(keep) {
+    for &idx in &order {
         active[idx] = true;
     }
     let mut bits = vec![0u8; total.div_ceil(8)];
@@ -51,6 +68,17 @@ fn magnitude_prune(w: &[f32], d_in: usize, d_out: usize, sp: f32) -> (Vec<u8>, V
         }
     }
     (bits, weights)
+}
+
+/// Guarda el orden por magnitud (índices desc por |w|) como u32 LE.
+fn write_order_cache(w: &[f32], path: &std::path::Path) {
+    let mut order: Vec<usize> = (0..w.len()).collect();
+    order.sort_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
+    let mut buf = Vec::with_capacity(order.len() * 4);
+    for i in &order {
+        buf.extend_from_slice(&(*i as u32).to_le_bytes());
+    }
+    let _ = std::fs::write(path, buf);
 }
 
 
@@ -141,7 +169,30 @@ fn main() -> Result<(), String> {
             }
             // Solo el gate se poda por capa; up/down se mantienen densos (Vía A).
             let block_sp = if block == "ffn_gate" { layer_sp } else { 0.0 };
-            let (adjacency, weights) = magnitude_prune(&w, d_in, d_out, block_sp.min(0.999));
+            if block_sp <= 0.0 {
+                continue; // no reemplazar: el tensor denso original se conserva
+            }
+            // Caché del orden por magnitud (invariante a la esparsidad): el
+            // primer punto del barrido lo escribe, los siguientes lo reusan.
+            let order_path = weights_dir.join(format!("order.{layer}.{block}.bin"));
+            let order_cache: Option<Vec<u32>> = match std::fs::read(&order_path) {
+                Ok(raw) if raw.len() == w.len() * 4 => Some(
+                    raw.chunks_exact(4)
+                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                ),
+                _ => {
+                    write_order_cache(&w, &order_path);
+                    None
+                }
+            };
+            let (adjacency, weights) = magnitude_prune(
+                &w,
+                d_in,
+                d_out,
+                block_sp.min(0.999),
+                order_cache.as_deref(),
+            );
             replacements.push(BlockReplacement {
                 tensor: format!("blk.{layer}.{block}.weight"),
                 block: SparseBlock {
