@@ -361,6 +361,37 @@
   global) con fitness Pareto `KL_global`/`D_arch_global` en SmolLM2 y ALIA;
   el `make-block`/`embed` debe aceptar la topología por capa del CPPN global.
 
+## D22 — Vía B: CMA-ES global sobre el genoma CPPN + evaluador de topología real
+- **Decisión:** cerrar la Vía B con el loop evolutivo global y dos niveles de
+  evaluador:
+  1. **Proxy de densidad** (rápido): `via_b_evolve.py` fija un `D_arch` objetivo
+     (`rho = 1 - darch`), decodifica el perfil por capa del CPPN global con
+     `decode_global(..., step=4)` (submuestreo ×34 más rápido, error <0.1% vs
+     step=1) y evalúa con `eval_sparse --sparsities` (poda por magnitud).
+  2. **Topología real** (exacto): `eval_sparse --genome <bin> --tau <f>` decodifica
+     la adyacencia CPPN de cada capa (con `y_layer`), conserva los pesos del
+     profesor en las posiciones activas y mide la KL del modelo con esa topología
+     exacta (rayon).
+- **Impacto:**
+  - `via_b_evolve.py` (saor): CMA-ES sobre los 466 floats del genoma global;
+    fitness = -KL al D_arch fijado. El proxy de densidad traza la frontera
+    (SmolLM2: KL 0.329 @ D_arch 0.017 con el perfil evolucionado).
+  - `eval_sparse --genome` (hayai): modo Vía B; `cppn_eval`/`cppn_layer_active`
+    espejo del sustrato v5 y del kernel `cppn_decode.cl`; paralelizado con rayon.
+  - `via_b_global_probe.py`: verifica que un solo CPPN induce densidad por capa
+    tipo campana (0.27→0.51 en SmolLM2) y reescala a una densidad objetivo.
+- **Hallazgo empírico clave:** la topología CPPN **arbitraria** (pesos del profesor
+  en posiciones seleccionadas por el CPPN) es mucho más costosa que la poda por
+  magnitud a la misma densidad (gen 0 `--full`: KL 5.57 @ D_arch 0.154 vs
+  magnitud ~KL 0.5 @ D_arch 0.10). Implicación: el valor de la Vía B no es el
+  patrón espacial aleatorio sino el **perfil por capa** (coordenada `y_layer`);
+  para que el patrón espacial importe, el CPPN debe evolucionarse con el fitness
+  de topología real (modo `--full`), mucho más caro por candidato.
+- **Estado:** sustrato v5 ✓; probe ✓; proxy de densidad ✓; evaluador real ✓;
+  loop `--full` validado (1 gen). El trazo completo de la frontera de ALIA con
+  la topología real requiere el kernel OpenCL (máquina con OCL; el decode CPU de
+  bloques 8192×24576 ≈ 201M conexiones × 120 bloques no escala en Rust).
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).

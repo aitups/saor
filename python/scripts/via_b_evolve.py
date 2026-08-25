@@ -1,0 +1,182 @@
+"""Vía B (D21): evolución global CMA-ES bajo Frontera de Pareto con CPPN global.
+
+UN solo genoma CPPN (sustrato v5, con coordenada de capa `y_layer`) genera la
+topología de TODAS las capas. Maximiza `D_arch_global` sujeto a `KL_global <= 0.50`.
+
+Variables CMA-ES:
+  z[0:466] = genoma CPPN aplanado (fila-mayor, layout del kernel OpenCL).
+
+Formulación por nivel de frontera: fijar D_arch global objetivo (`--darch`),
+rho = 1 - darch, y el CPPN evoluciona el PERFIL por capa para minimizar KL_global.
+Barriendo `--darch` se traza la frontera de Pareto (KL_global <= 0.50).
+
+Decodificación por candidato:
+  genome.decode_global(d_in, d_out, tau_fijo, n_layers, dense_density=rho, step=4)
+    -> densidades por capa (perfil del CPPN reescalado a media rho)
+    -> sparsities = 1 - densidades  ->  eval_sparse (hayai, poda por magnitud).
+
+Uso:
+  python python/scripts/via_b_evolve.py --darch 0.10 --gens 12
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+
+import numpy as np
+
+sys.path.insert(0, r"d:\Documents\pySrc\saor\python")
+from saor_orchestrator.reference.cmaes import CmaEsParams, CmaEsState  # noqa: E402
+from saor_orchestrator.reference.cppn import CppnGenome  # noqa: E402
+
+TMP = "C:/Users/epoke/AppData/Local/Temp"
+MODEL = r"d:\Documents\pySrc\hayai\models\SmolLM2-135M-Instruct-Q4_K_M.gguf"
+EVAL = r"d:\Documents\pySrc\hayai\target\release\examples\eval_sparse.exe"
+PROMPTS = f"{TMP}/calib128.txt"
+N_LAYERS = 30
+D_IN, D_OUT = 576, 1536
+TAU_CPPN = 0.42
+N_POS = 24
+SP_CAP = 0.95  # esparsidad máxima por capa (eval_sparse)
+
+
+def sh(cmd: str, timeout: int = 600) -> str:
+    r = subprocess.run(["cmd", "/c", cmd], capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"{cmd}\n{r.stderr[-1200:]}")
+    return r.stdout
+
+
+def random_genome(seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    g = CppnGenome()
+    g.w0 = rng.standard_normal(g.w0.shape).astype(np.float32) * 0.8
+    g.b0 = rng.standard_normal(g.b0.shape).astype(np.float32) * 0.3
+    g.w1 = rng.standard_normal(g.w1.shape).astype(np.float32) * 0.5
+    g.b1 = rng.standard_normal(g.b1.shape).astype(np.float32) * 0.2
+    g.w2 = rng.standard_normal(g.w2.shape).astype(np.float32) * 0.5
+    g.b2 = rng.standard_normal(g.b2.shape).astype(np.float32) * 0.2
+    return g.flatten()
+
+
+def decode_sparsities(z: np.ndarray, rho: float, step: int = 4) -> list[float]:
+    """Perfil por capa del CPPN global reescalado a densidad media rho.
+
+    `step > 1` submuestrea el sustrato (estimador de densidad rápido para el
+    loop CMA-ES); la topología exacta se decodifica después con step=1.
+    """
+    genome = CppnGenome.from_flatten(z[:466].astype(np.float32))
+    densities, _ = genome.decode_global(
+        D_IN, D_OUT, TAU_CPPN, N_LAYERS, dense_density=rho, step=step
+    )
+    return [float(np.clip(1.0 - d, 0.0, SP_CAP)) for d in densities]
+
+
+def evaluate(sparsities: list[float], genome_z: np.ndarray | None = None, tau: float = TAU_CPPN) -> dict:
+    """Evalúa un candidato. `genome_z=None` → poda por magnitud (densidades);
+    con genoma → topología CPPN real (`eval_sparse --genome`)."""
+    if genome_z is None:
+        path = f"{TMP}/vib_sp_candidate.txt"
+        with open(path, "w") as f:
+            f.write("\n".join(f"{s:.4f}" for s in sparsities) + "\n")
+        out = sh(
+            f'{EVAL} --model {MODEL} --prompts {PROMPTS} --sparsities {path} '
+            f"--n-positions {N_POS} --device cpu"
+        )
+    else:
+        gpath = f"{TMP}/vib_genome.bin"
+        with open(gpath, "wb") as f:
+            f.write(np.asarray(genome_z, np.float32).tobytes())
+        out = sh(
+            f'{EVAL} --model {MODEL} --prompts {PROMPTS} --genome {gpath} '
+            f"--tau {tau:.4f} --n-positions {N_POS} --device cpu"
+        )
+    return json.loads(out.strip())
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="CMA-ES global Vía B (CPPN con y_layer)")
+    ap.add_argument("--gens", type=int, default=10)
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument(
+        "--darch", type=float, default=0.10,
+        help="D_arch global objetivo (fijo); el CPPN evoluciona el perfil para minimizar KL",
+    )
+    ap.add_argument(
+        "--full", action="store_true",
+        help="evaluar la topología CPPN REAL (eval_sparse --genome) en vez del proxy de densidad",
+    )
+    ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo --full)")
+    args = ap.parse_args()
+
+    genome_dim = CppnGenome().param_count  # 466
+    rho = float(np.clip(1.0 - args.darch, 0.05, 0.95))  # densidad media fija
+    params = CmaEsParams(genome_dim, args.seed)
+    mean0 = random_genome(args.seed)  # perfil campana inicial
+    state = CmaEsState(params, mean0)
+
+    history = []
+    best_kl = {"kl": float("inf"), "darch": None, "z": None, "sps": None}
+    best_profile = {"kl": None, "darch": None, "z": None, "sps": None}
+
+    for gen in range(args.gens):
+        pop = state.spawn_population(args.seed + gen)
+        scored = []
+        for col in range(pop.candidates.shape[1]):
+            z = pop.candidates[:, col]
+            if args.full:
+                sps = None
+                r = evaluate([], genome_z=z, tau=args.tau)
+            else:
+                sps = decode_sparsities(z, rho)
+                r = evaluate(sps)
+            d_arch, kl = r["d_arch_global"], r["kl_global"]
+            fitness = -kl  # minimizar KL al D_arch fijado por rho
+            scored.append((fitness, kl, d_arch, sps, z))
+            if kl < best_kl["kl"]:
+                best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
+        scored.sort(key=lambda s: -s[0])
+        order = sorted(range(len(scored)), key=lambda i: -scored[i][0])
+        state.update(pop, order[: params.mu])
+        gen_best = scored[0]
+        history.append(
+            {
+                "gen": gen,
+                "best_kl": round(gen_best[1], 4),
+                "best_darch": round(gen_best[2], 4),
+                "best_fitness": round(gen_best[0], 4),
+            }
+        )
+        print(
+            f"gen {gen:2d} best_kl={gen_best[1]:.4f} darch={gen_best[2]:.3f} "
+            f"(target {args.darch:.2f}) | mejora kl={best_kl['kl']:.4f}",
+            flush=True,
+        )
+
+    print(f"\n=== Mejor perfil para D_arch ~ {args.darch:.2f} (KL={best_kl['kl']:.4f}, "
+          f"D_arch_real={best_kl['darch']:.4f}) ===")
+    if best_kl["sps"] is not None:
+        print("  esparsidad por capa:", [round(s, 3) for s in best_kl["sps"]])
+    with open(f"{TMP}/via_b_best_genome.bin", "wb") as f:
+        f.write(np.asarray(best_kl["z"], np.float32).tobytes())
+    print(f"  genoma guardado en {TMP}/via_b_best_genome.bin")
+
+    with open(f"{TMP}/via_b_history.json", "w") as f:
+        json.dump(
+            {
+                "history": history,
+                "best": {
+                    "kl": best_kl["kl"],
+                    "darch": best_kl["darch"],
+                    "sps": best_kl["sps"],
+                    "z": None if best_kl["z"] is None else best_kl["z"].tolist(),
+                },
+            },
+            f,
+            indent=2,
+        )
+
+
+if __name__ == "__main__":
+    main()
+

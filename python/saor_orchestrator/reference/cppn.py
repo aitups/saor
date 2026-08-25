@@ -165,6 +165,7 @@ class CppnGenome:
         tau: float,
         n_layers: int,
         dense_density: float | None = None,
+        step: int = 1,
     ) -> tuple[list[float], np.ndarray]:
         """Decodifica la topología de **todas las capas** con un solo CPPN (Vía B).
 
@@ -173,14 +174,20 @@ class CppnGenome:
         genoma. Devuelve `(densidades_por_capa, adjacency)` donde `adjacency`
         es `[n_layers, ceil(d_in*d_out/8)]` en el formato `ffn_dag_adjacency`.
 
+        `step > 1` submuestrea el sustrato (retícula estridente): estima las
+        densidades por capa ~`step²`× más rápido con error estadístico pequeño
+        (std ≈ sqrt(p(1-p)/n_sampled)); las adyacencias NO son exactas con
+        `step > 1` (solo útiles como estimador de densidad para el loop CMA-ES).
+
         Si `dense_density` se da, se reescala la densidad media global al
         objetivo (frontera de Pareto) moviendo el umbral efectivo.
         """
         total = d_in * d_out
         n_bytes = (total + 7) // 8
-        adjs = np.zeros((n_layers, n_bytes), np.uint8)
-        # Sustrato vectorizado: todas las conexiones de una capa a la vez.
-        ii, jj = np.meshgrid(np.arange(d_in), np.arange(d_out), indexing="ij")
+        # Sustrato vectorizado: retícula estridente cuando step > 1.
+        ii_all = np.arange(0, d_in, step)
+        jj_all = np.arange(0, d_out, step)
+        ii, jj = np.meshgrid(ii_all, jj_all, indexing="ij")
         yi = -1.0 + 2.0 * ii.astype(np.float32) / (d_in - 1) if d_in > 1 else np.zeros_like(ii, np.float32)
         yj = -1.0 + 2.0 * jj.astype(np.float32) / (d_out - 1) if d_out > 1 else np.zeros_like(jj, np.float32)
         base = np.stack(
@@ -195,7 +202,9 @@ class CppnGenome:
                 np.cos(np.pi * yj),
             ],
             axis=-1,
-        )  # [d_in, d_out, 8]
+        )  # [d_in/step, d_out/step, 8]
+        n_sampled = base.shape[0] * base.shape[1]
+        adjs = np.zeros((n_layers, n_bytes), np.uint8) if step == 1 else None
         densities: list[float] = []
         for layer in range(n_layers):
             yl = np.float32(layer_coord(layer, n_layers))
@@ -216,11 +225,12 @@ class CppnGenome:
             l = 1.0 / (1.0 + np.exp(-out[:, 1]))
             active_mask = l > tau
             active = int(active_mask.sum())
-            bits = np.nonzero(active_mask.reshape(d_in, d_out))
-            for idx in range(len(bits[0])):
-                bit = bits[0][idx] * d_out + bits[1][idx]
-                adjs[layer, bit // 8] |= 1 << (bit % 8)
-            densities.append(active / total)
+            if step == 1:
+                bits = np.nonzero(active_mask.reshape(ii_all.size, jj_all.size))
+                for idx in range(len(bits[0])):
+                    bit = bits[0][idx] * d_out + bits[1][idx]
+                    adjs[layer, bit // 8] |= 1 << (bit % 8)
+            densities.append(active / n_sampled)
         if dense_density is not None and densities and sum(densities) > 0:
             k = np.clip(dense_density / (sum(densities) / n_layers), 1e-3, 1e3)
             densities = [min(1.0, d * k) for d in densities]
