@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TMP = Path("C:/Users/epoke/AppData/Local/Temp")
+TMP = Path(r"d:\Documents\pySrc\.scratch")  # D: (rápido, ~190 GB) — no usar C:
 MODEL = Path(r"d:\Documents\pySrc\hayai\models\SmolLM2-135M-Instruct-Q4_K_M.gguf")
 DUMP = Path(r"d:\Documents\pySrc\hayai\target\release\examples\dump_weights.exe")
 KL_EVAL = Path(r"d:\Documents\pySrc\hayai\target\release\examples\kl_eval.exe")

@@ -443,6 +443,28 @@
   Qwen3.5, esparcir solo las capas full-attn (el path deltanet carga el FFN por
   `load_quant_matrix`, no por CSR).
 
+## D25 — Frontera Qwen3.5-4B cuantificada + scratch en disco D
+- **Fix de entorno:** los temporales ahora viven en `d:\Documents\pySrc\.scratch`
+  (disco D, ~190 GB libres, más rápido) — nunca en `C:\Users\...\AppData`.
+  Con esto la limitación de disco de D24 queda resuelta.
+- **Fix de funcionalidad:** el FFN disperso embebido (D16) ahora funciona en el
+  híbrido completo:
+  - `run_full_attn_block` (full-attn) usa `run_ffn_block` cuando el pack trae CSR.
+  - `run_deltanet_block` (DeltaNet/SSM) carga las matrices FFN con
+    `GgufCatalog::load_ffn_matrices` (densas o CSR) y ejecuta el CSR en CPU.
+- **Frontera de Qwen3.5-4B (path de producción, `kl_eval`):**
+  | perfil | D_arch | KL |
+  |---|---|---|
+  | full-attn (8/33) gate sp 0.3 | 0.024 | 0.288 |
+  | full-attn gate sp 0.5 | 0.040 | 0.567 |
+  | full-attn gate sp 0.7 | 0.057 | 0.944 |
+  | **todas (33/33) gate sp 0.3** | **0.100** | **0.762** |
+- **Hallazgo clave:** el modelo de 4B es **~3× más compresible que SmolLM2** a
+  igual KL: D_arch ~0.10 → KL 0.76 (Qwen3.5) vs KL >>1 (SmolLM2 uniforme). La
+  hipótesis de compresión variable por modelo queda cuantificada entre escalas
+  (135M vs 4B). Esparcir distribuidamente (todas las capas) gana mucho frente a
+  concentrar en pocas capas a igual D_arch.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).

@@ -30,7 +30,7 @@ sys.path.insert(0, r"d:\Documents\pySrc\saor\python")
 from saor_orchestrator.reference.cmaes import CmaEsParams, CmaEsState  # noqa: E402
 from saor_orchestrator.reference.cppn import CppnGenome  # noqa: E402
 
-TMP = "C:/Users/epoke/AppData/Local/Temp"
+TMP = r"d:\Documents\pySrc\.scratch"  # D: (rápido, ~190 GB) — no usar C:
 MODEL = r"d:\Documents\pySrc\hayai\models\SmolLM2-135M-Instruct-Q4_K_M.gguf"
 EVAL = r"d:\Documents\pySrc\hayai\target\release\examples\eval_sparse.exe"
 PROMPTS = f"{TMP}/calib128.txt"
