@@ -418,6 +418,31 @@
 - **Pendiente Qwen3.8-27B:** mismo soporte (attn_qkv + SsmIrregularDag) ya
   cubierto en el streaming; falta validar con el modelo 27B y el evaluador Vía B.
 
+## D24 — Evaluador de frontera sobre el path de producción (StreamingGenerator)
+- **Decisión:** el evaluador de la frontera de Pareto (KL_global / D_arch_global)
+  para modelos grandes usa ahora el **StreamingGenerator** (path de producción)
+  en vez del `Generator` legacy (`--dev-mmap`, que no soporta híbridos Qwen3.5).
+  Tres piezas:
+  1. **`dump_weights`** (hayai): dequant F32 de los bloques FFN del profesor
+     (`w.{layer}.{block}.bin` + `meta.json`) — una sola vez por modelo.
+  2. **`embed_sparse`** (bin de `saor-streamer`): poda por magnitud del gate y
+     reescritura **streaming** del GGUF embebido (D16) — sin OpenCL y sin cargar
+     el archivo completo (crítico para GGUFs de 15–27 GB).
+  3. **`kl_eval`** (hayai): abre original + embebido como `StreamingGenerator`,
+     forward teacher-forced token a token → `KL_global`; `D_arch_global` desde
+     los bloques dispersos del embebido (popcount de la adyacencia, params FFN
+     totales como denominador).
+- **Validación (SmolLM2):** el sweep `frontier_stream_sweep.py` reproduce la
+  frontera KL vs D_arch; **`kl_eval` y `eval_sparse` dan exactamente el mismo
+  KL (0.754 @ D_arch 0.033)** — cross-validación del path streaming vs legacy.
+  La frontera de Vía A (D_arch ~0.10 @ KL 0.50) era con perfil optimizado por
+  capa; el uniforme da más KL (esperado).
+- **Limitación de disco:** el dump F32 de Qwen3.5 (~8 GB) y el embebido (~3 GB)
+  no caben en esta máquina (disco casi lleno por `alia_emb2.gguf` de 23 GB);
+  el pipeline queda listo para ejecutarse con espacio disponible. En híbridos
+  Qwen3.5, esparcir solo las capas full-attn (el path deltanet carga el FFN por
+  `load_quant_matrix`, no por CSR).
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
