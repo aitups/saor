@@ -43,6 +43,12 @@ KL_MAX = 0.50
 LAMBDA_PEN = 2.0
 N_POS = 24
 SP_CAP = 0.95  # esparsidad máxima por capa (eval_sparse)
+# Prefijo de las salidas (via_b_best_genome_{NAME}.bin / via_b_history_{NAME}.json)
+# para no pisar resultados entre modelos.
+NAME = "smol"
+# Device del `kl_eval` del path streaming ("auto" = OpenCL si hay GPU, "cpu").
+# ALIA-40b en la RTX 4050 (6 GB) puede requerir "cpu" si el path GPU no cabe.
+KL_DEVICE = "auto"
 # Decode de la topología CPPN en la GPU (embed_sparse --gpu). Se activa con
 # `--gpu`; el embed falla con un mensaje claro si no hay dispositivo OpenCL.
 GPU_EMBED = False
@@ -117,7 +123,7 @@ def evaluate(
         )
         out = sh(
             f"{KL_EVAL} --orig {MODEL} --sparse {emb} --prompts {PROMPTS} "
-            f"--n-positions {n_pos} --device auto"
+            f"--n-positions {n_pos} --device {KL_DEVICE}"
         )
         os.remove(emb)
     else:
@@ -155,12 +161,34 @@ def main() -> None:
         help="decodificar la topología CPPN en la GPU (embed_sparse --gpu); "
         "necesario para ALIA-40b (inviable en CPU). Sin él, decode por CPU.",
     )
+    ap.add_argument("--model", type=str, default=MODEL, help="GGUF original del profesor")
+    ap.add_argument("--weights", type=str, default=str(W_DIR), help="dir de dump_weights")
+    ap.add_argument("--n-layers", type=int, default=N_LAYERS, help="capas del modelo")
+    ap.add_argument("--d-in", type=int, default=D_IN, help="d_in del FFN (hidden)")
+    ap.add_argument("--d-out", type=int, default=D_OUT, help="d_out del FFN (intermedio)")
+    ap.add_argument(
+        "--device", type=str, default=KL_DEVICE,
+        help="device del kl_eval del streaming (auto|cpu); ALIA puede requerir cpu",
+    )
+    ap.add_argument(
+        "--name", type=str, default=NAME,
+        help="prefijo de salidas (via_b_best_genome_<name>.bin, via_b_history_<name>.json)",
+    )
     args = ap.parse_args()
-    global GPU_EMBED
+    global GPU_EMBED, MODEL, N_LAYERS, D_IN, D_OUT, W_DIR, KL_DEVICE, NAME
     GPU_EMBED = args.gpu
+    MODEL = args.model
+    N_LAYERS = args.n_layers
+    D_IN = args.d_in
+    D_OUT = args.d_out
+    W_DIR = Path(args.weights)
+    KL_DEVICE = args.device
+    NAME = args.name
 
     if args.streaming and not (W_DIR / "meta.json").exists():
-        print(sh(f"{DUMP_WEIGHTS} --model {MODEL} --out {W_DIR}").strip(), flush=True)
+        # Solo el gate: up/down quedan densos (semántica D16); evita volcar
+        # ~110 GB de up/down en ALIA-40b.
+        print(sh(f"{DUMP_WEIGHTS} --model {MODEL} --out {W_DIR} --blocks gate").strip(), flush=True)
 
     genome_dim = CppnGenome().param_count  # 466
     rho = float(np.clip(1.0 - args.darch, 0.05, 0.95))  # densidad media fija
@@ -226,11 +254,11 @@ def main() -> None:
           f"D_arch_real={best_kl['darch']:.4f}) ===")
     if best_kl["sps"] is not None:
         print("  esparsidad por capa:", [round(s, 3) for s in best_kl["sps"]])
-    with open(f"{TMP}/via_b_best_genome.bin", "wb") as f:
+    with open(f"{TMP}/via_b_best_genome_{NAME}.bin", "wb") as f:
         f.write(np.asarray(best_kl["z"], np.float32).tobytes())
-    print(f"  genoma guardado en {TMP}/via_b_best_genome.bin")
+    print(f"  genoma guardado en {TMP}/via_b_best_genome_{NAME}.bin")
 
-    with open(f"{TMP}/via_b_history.json", "w") as f:
+    with open(f"{TMP}/via_b_history_{NAME}.json", "w") as f:
         json.dump(
             {
                 "history": history,

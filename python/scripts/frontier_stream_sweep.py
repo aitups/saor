@@ -40,6 +40,10 @@ def main() -> None:
     ap.add_argument("--name", type=str, default="frontier")
     ap.add_argument("--blocks", type=str, default="all", help="'gate' para solo los gates")
     ap.add_argument("--n-positions", type=int, default=N_POS)
+    ap.add_argument(
+        "--device", type=str, default="cpu",
+        help="device del kl_eval (cpu evita OOM en 40B; auto = OpenCL)",
+    )
     args = ap.parse_args()
 
     model = Path(args.model)
@@ -57,7 +61,7 @@ def main() -> None:
                  f"--sparsities {sp_file}").strip(), flush=True)
         print(f"[sp={sp:.2f}] evaluando...", flush=True)
         out = sh(f"{KL_EVAL} --orig {model} --sparse {emb} --prompts {PROMPTS} "
-                 f"--n-positions {args.n_positions} --device cpu")
+                 f"--n-positions {args.n_positions} --device {args.device}")
         r = json.loads(out.strip())
         points.append({"sp": sp, **r})
         print(f"  -> KL={r['kl_global']:.4f} D_arch={r['d_arch_global']:.4f}", flush=True)
