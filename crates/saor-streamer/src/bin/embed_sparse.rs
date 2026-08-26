@@ -47,7 +47,8 @@ fn magnitude_prune(
         Some(c) if c.len() == total => c.iter().map(|&i| i as usize).collect(),
         _ => {
             let mut o: Vec<usize> = (0..total).collect();
-            o.sort_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
+            use rayon::prelude::*;
+            o.par_sort_unstable_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
             o
         }
     };
@@ -73,7 +74,8 @@ fn magnitude_prune(
 /// Guarda el orden por magnitud (índices desc por |w|) como u32 LE.
 fn write_order_cache(w: &[f32], path: &std::path::Path) {
     let mut order: Vec<usize> = (0..w.len()).collect();
-    order.sort_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
+    use rayon::prelude::*;
+    order.par_sort_unstable_by(|&a, &b| w[b].abs().total_cmp(&w[a].abs()));
     let mut buf = Vec::with_capacity(order.len() * 4);
     for i in &order {
         buf.extend_from_slice(&(*i as u32).to_le_bytes());
@@ -193,6 +195,16 @@ fn main() -> Result<(), String> {
                 block_sp.min(0.999),
                 order_cache.as_deref(),
             );
+            // Los pesos F32 se escriben a fichero (streaming): para ALIA-40b
+            // (201M activos × 48 capas ≈ 35 GB) no caben en RAM.
+            let wfile = weights_dir.join(format!("wdata.{layer}.{block}.bin"));
+            let mut wbuf = Vec::with_capacity(weights.len() * 4);
+            for x in &weights {
+                wbuf.extend_from_slice(&x.to_le_bytes());
+            }
+            std::fs::write(&wfile, &wbuf)
+                .map_err(|e| format!("escribir pesos {wfile:?}: {e}"))?;
+            drop(wbuf);
             replacements.push(BlockReplacement {
                 tensor: format!("blk.{layer}.{block}.weight"),
                 block: SparseBlock {
@@ -201,8 +213,9 @@ fn main() -> Result<(), String> {
                     tau,
                     genome: Vec::new(),
                     adjacency,
-                    weights,
+                    weights: Vec::new(),
                 },
+                weights_file: Some(wfile),
             });
         }
     }

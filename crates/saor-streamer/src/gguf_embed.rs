@@ -271,6 +271,9 @@ pub struct BlockReplacement {
     pub tensor: String,
     /// Bloque disperso (bit-tensor + pesos activos + tau + genoma).
     pub block: SparseBlock,
+    /// Ruta a un fichero con los pesos F32 del bloque (streaming): para bloques
+    /// grandes evita retener los pesos en RAM (ALIA 40B: ~35 GB en RAM).
+    pub weights_file: Option<std::path::PathBuf>,
 }
 
 /// Reporte de la reescritura.
@@ -332,6 +335,8 @@ struct OutTensor {
     offset: u64,
     src_abs: Option<u64>,
     data: Option<Vec<u8>>,
+    /// Pesos F32 en un fichero externo (streaming): evita retenerlos en RAM.
+    data_file: Option<std::path::PathBuf>,
 }
 
 /// Reescribe `src` en `dst` sustituyendo los tensores indicados por bloques
@@ -366,17 +371,31 @@ pub fn rewrite_embedded(
             offset: 0,
             src_abs: Some(h.data_start_abs + t.offset),
             data: None,
+            data_file: None,
         });
     }
     let mut base_names: Vec<&str> = repl.keys().copied().collect();
     base_names.sort();
-    for base in &base_names {
-        let block = repl[*base];
-        let bn = base_name(base);
-        let mut wdata = Vec::with_capacity(block.weights.len() * 4);
-        for w in &block.weights {
-            wdata.extend_from_slice(&w.to_le_bytes());
-        }
+    for r in replacements {
+        let block = &r.block;
+        let bn = base_name(&r.tensor);
+        // Pesos F32: en memoria (normal) o en fichero externo (streaming, ALIA).
+        let (wdata, wfile, wnbytes) = match &r.weights_file {
+            Some(path) => {
+                let len = std::fs::metadata(path)
+                    .map_err(|e| format!("pesos {path:?}: {e}"))?
+                    .len();
+                (None, Some(path.clone()), len)
+            }
+            None => {
+                let mut wdata = Vec::with_capacity(block.weights.len() * 4);
+                for w in &block.weights {
+                    wdata.extend_from_slice(&w.to_le_bytes());
+                }
+                let len = wdata.len() as u64;
+                (Some(wdata), None, len)
+            }
+        };
         out.push(OutTensor {
             name: format!("{bn}{ADJACENCY_SUFFIX}"),
             dims: vec![block.adjacency.len() as u64],
@@ -385,15 +404,21 @@ pub fn rewrite_embedded(
             offset: 0,
             src_abs: None,
             data: Some(block.adjacency.clone()),
+            data_file: None,
         });
         out.push(OutTensor {
             name: format!("{bn}{WEIGHTS_SUFFIX}"),
-            dims: vec![block.weights.len() as u64],
+            dims: vec![if r.weights_file.is_some() {
+                wnbytes / 4
+            } else {
+                block.weights.len() as u64
+            }],
             ggml_type: GGML_TYPE_F32,
-            nbytes: wdata.len() as u64,
+            nbytes: wnbytes,
             offset: 0,
             src_abs: None,
-            data: Some(wdata),
+            data: wdata,
+            data_file: wfile,
         });
     }
 
@@ -487,6 +512,28 @@ fn build_and_write(
                 dstf
                     .write_all(d)
                     .map_err(|e| format!("escribir disperso: {e}"))?;
+                written += t.nbytes;
+                sparse_bytes += t.nbytes;
+            }
+            (None, None) if t.data_file.is_some() => {
+                // Pesos F32 en fichero externo (streaming): no caben en RAM.
+                let path = t.data_file.as_ref().unwrap().clone();
+                let mut srcw =
+                    File::open(&path).map_err(|e| format!("abrir pesos: {e}"))?;
+                let mut remaining = t.nbytes;
+                while remaining > 0 {
+                    let n = (remaining as usize).min(buf.len());
+                    srcw
+                        .read_exact(&mut buf[..n])
+                        .map_err(|e| format!("leer pesos: {e}"))?;
+                    dstf
+                        .write_all(&buf[..n])
+                        .map_err(|e| format!("escribir pesos: {e}"))?;
+                    remaining -= n as u64;
+                }
+                // Liberar el fichero temporal (el pico wdata+output no cabe en
+                // discos medianos para ALIA-40b).
+                let _ = std::fs::remove_file(&path);
                 written += t.nbytes;
                 sparse_bytes += t.nbytes;
             }
@@ -780,6 +827,7 @@ mod tests {
             &[BlockReplacement {
                 tensor: "blk.0.ffn_gate.weight".into(),
                 block: block.clone(),
+                weights_file: None,
             }],
         )
         .expect("rewrite");
