@@ -21,8 +21,10 @@ Uso:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -37,6 +39,8 @@ PROMPTS = f"{TMP}/calib128.txt"
 N_LAYERS = 30
 D_IN, D_OUT = 576, 1536
 TAU_CPPN = 0.42
+KL_MAX = 0.50
+LAMBDA_PEN = 2.0
 N_POS = 24
 SP_CAP = 0.95  # esparsidad máxima por capa (eval_sparse)
 
@@ -73,9 +77,21 @@ def decode_sparsities(z: np.ndarray, rho: float, step: int = 4) -> list[float]:
     return [float(np.clip(1.0 - d, 0.0, SP_CAP)) for d in densities]
 
 
-def evaluate(sparsities: list[float], genome_z: np.ndarray | None = None, tau: float = TAU_CPPN) -> dict:
+EMBED = Path(r"d:\Documents\pySrc\saor\target\release\embed_sparse.exe")
+KL_EVAL = Path(r"d:\Documents\pySrc\hayai\target\release\examples\kl_eval.exe")
+DUMP_WEIGHTS = Path(r"d:\Documents\pySrc\hayai\target\release\examples\dump_weights.exe")
+W_DIR = Path(r"d:\Documents\pySrc\.scratch\w_frontier")  # dump de pesos (una vez)
+
+
+def evaluate(
+    sparsities: list[float],
+    genome_z: np.ndarray | None = None,
+    tau: float = TAU_CPPN,
+    streaming: bool = False,
+) -> dict:
     """Evalúa un candidato. `genome_z=None` → poda por magnitud (densidades);
-    con genoma → topología CPPN real (`eval_sparse --genome`)."""
+    con genoma → topología CPPN real (`eval_sparse --genome` o `embed_sparse
+    --genome` + `kl_eval` en el path de producción con `--streaming`)."""
     if genome_z is None:
         path = f"{TMP}/vib_sp_candidate.txt"
         with open(path, "w") as f:
@@ -84,6 +100,21 @@ def evaluate(sparsities: list[float], genome_z: np.ndarray | None = None, tau: f
             f'{EVAL} --model {MODEL} --prompts {PROMPTS} --sparsities {path} '
             f"--n-positions {N_POS} --device cpu"
         )
+    elif streaming:
+        # Path de producción: CPPN → embed D16 → kl_eval (StreamingGenerator).
+        gpath = f"{TMP}/vib_genome.bin"
+        with open(gpath, "wb") as f:
+            f.write(np.asarray(genome_z, np.float32).tobytes())
+        emb = f"{TMP}/vib_candidate.gguf"
+        sh(
+            f"{EMBED} --model {MODEL} --out {emb} --weights {W_DIR} "
+            f"--genome {gpath} --tau {tau:.4f}"
+        )
+        out = sh(
+            f"{KL_EVAL} --orig {MODEL} --sparse {emb} --prompts {PROMPTS} "
+            f"--n-positions {N_POS} --device auto"
+        )
+        os.remove(emb)
     else:
         gpath = f"{TMP}/vib_genome.bin"
         with open(gpath, "wb") as f:
@@ -93,6 +124,7 @@ def evaluate(sparsities: list[float], genome_z: np.ndarray | None = None, tau: f
             f"--tau {tau:.4f} --n-positions {N_POS} --device cpu"
         )
     return json.loads(out.strip())
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="CMA-ES global Vía B (CPPN con y_layer)")
@@ -106,8 +138,15 @@ def main() -> None:
         "--full", action="store_true",
         help="evaluar la topología CPPN REAL (eval_sparse --genome) en vez del proxy de densidad",
     )
-    ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo --full)")
+    ap.add_argument(
+        "--streaming", action="store_true",
+        help="topología CPPN REAL en el path de producción (embed_sparse --genome + kl_eval)",
+    )
+    ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo topología)")
     args = ap.parse_args()
+
+    if args.streaming and not (W_DIR / "meta.json").exists():
+        print(sh(f"{DUMP_WEIGHTS} --model {MODEL} --out {W_DIR}").strip(), flush=True)
 
     genome_dim = CppnGenome().param_count  # 466
     rho = float(np.clip(1.0 - args.darch, 0.05, 0.95))  # densidad media fija
@@ -118,20 +157,24 @@ def main() -> None:
     history = []
     best_kl = {"kl": float("inf"), "darch": None, "z": None, "sps": None}
     best_profile = {"kl": None, "darch": None, "z": None, "sps": None}
+    topology = args.full or args.streaming
 
     for gen in range(args.gens):
         pop = state.spawn_population(args.seed + gen)
         scored = []
         for col in range(pop.candidates.shape[1]):
             z = pop.candidates[:, col]
-            if args.full:
+            if topology:
+                # Topología CPPN real: maximizar D_arch sujeto a KL <= 0.50.
                 sps = None
-                r = evaluate([], genome_z=z, tau=args.tau)
+                r = evaluate([], genome_z=z, tau=args.tau, streaming=args.streaming)
+                d_arch, kl = r["d_arch_global"], r["kl_global"]
+                fitness = d_arch - LAMBDA_PEN * max(0.0, kl - KL_MAX)
             else:
                 sps = decode_sparsities(z, rho)
                 r = evaluate(sps)
-            d_arch, kl = r["d_arch_global"], r["kl_global"]
-            fitness = -kl  # minimizar KL al D_arch fijado por rho
+                d_arch, kl = r["d_arch_global"], r["kl_global"]
+                fitness = -kl  # minimizar KL al D_arch fijado por rho
             scored.append((fitness, kl, d_arch, sps, z))
             if kl < best_kl["kl"]:
                 best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
