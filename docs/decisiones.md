@@ -591,6 +591,11 @@
   capas 0–15 al 95–99% esparsas, capas 16–29 progresivamente densas (94 → 85%),
   media 92.2%. El CMA-ES reproduce el patrón de la frontera de ALIA: las capas
   tempranas son prescindibles y la información se concentra antes de la cabeza.
+- **Reproducibilidad:** run limpio (n_pos 24, 4 gens) → gen 0: 5.57, gen 1: 5.58,
+  gen 2: **1.6823** @ D_arch 0.078, gen 3: 7.14 (divergente). Mismo óptimo que el
+  run ruidoso (n_pos 8): el mínimo KL ≈ 1.68 @ D_arch ≈ 0.078 es robusto. La gen 3
+  diverge en ambos runs (sigma del CMA-ES crece) — mitigado con el reinicio de
+  sigma (`via_b_evolve`, commit 5701e3b) para runs largos.
 - **Costo por candidato** (~40 s en SmolLM2): el decode CPPN en Rust
   (`instantiate_layer`, 26M conexiones × 30 capas) + la reescritura GGUF + el
   kl_eval. Con `--n-pos 8` una generación (22 candidatos) ≈ 15 min.
