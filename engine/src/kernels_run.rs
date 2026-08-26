@@ -124,6 +124,35 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
     let active_ref = topo.active_connections();
     let active_match = active as usize == active_ref;
 
+    // --- Decode multi-capa (Vía B): capa intermedia con y_layer != 0 y tau bajo
+    // (el genoma `random_with` sesga l_ij muy por debajo de 0.42, dejando la
+    // topología vacía; tau=0.05 la vuelve no vacía). El kernel deriva y_layer
+    // internamente desde (layer, n_layers); la referencia usa `layer_coord` +
+    // `instantiate_layer` (deben coincidir bit a bit).
+    let (n_layer_test, n_layers_test) = (7usize, 30usize);
+    let tau_b = 0.30f32;
+    let (adj_b, active_b) = engine.cppn_decode_adjacency(
+        &flat,
+        params.d_in,
+        params.d_out,
+        tau_b,
+        n_layer_test,
+        n_layers_test,
+    )?;
+    let topo_b = saor_domain::topology::instantiate_layer(
+        &genome,
+        params.d_in,
+        params.d_out,
+        tau_b,
+        saor_domain::cppn::layer_coord(n_layer_test, n_layers_test),
+    );
+    let adj_diff_b = adj_b
+        .iter()
+        .zip(topo_b.adjacency_bits.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    let active_b_match = active_b as usize == topo_b.active_connections();
+
     // --- Gram/CKA ---
     let h0 = matmul_t(&x, &w0, params.batch, params.d_in, params.d_out); // profesor
     let h1 = y_dense.clone(); // candidato
@@ -140,6 +169,8 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
         && err_y_csr < 1e-3
         && adj_diff == 0
         && active_match
+        && adj_diff_b == 0
+        && active_b_match
         && cka.is_finite();
 
     Ok(json!({
@@ -161,6 +192,10 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
             "err_csr_host_vs_ref": err_csr_host_vs_ref,
             "err_csr_kernel_vs_host": err_csr_kernel_vs_host,
             "csr_nnz": vals.len(),
+            "active_layer": active_b,
+            "active_layer_ref": topo_b.active_connections(),
+            "active_layer_match": active_b_match,
+            "adj_bytes_diff_layer": adj_diff_b,
             "cka": cka,
         },
         // Datos crudos para la validación cruzada con NumPy.

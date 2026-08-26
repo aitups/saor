@@ -11,4 +11,8 @@ rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 saor-domain = { path = "../saor-domain" }
+# Decodificador CPPN por GPU (Vía B). El linkeo es dinámico (cl3 `dynamic`):
+# carga OpenCL.dll en runtime; en máquinas sin GPU el binario sigue linkeando
+# y `embed_sparse --gpu` falla con un mensaje claro (sin fallback silencioso).
+saor-opencl = { path = "../saor-opencl" }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Memory"] }

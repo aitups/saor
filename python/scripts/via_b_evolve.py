@@ -43,6 +43,9 @@ KL_MAX = 0.50
 LAMBDA_PEN = 2.0
 N_POS = 24
 SP_CAP = 0.95  # esparsidad máxima por capa (eval_sparse)
+# Decode de la topología CPPN en la GPU (embed_sparse --gpu). Se activa con
+# `--gpu`; el embed falla con un mensaje claro si no hay dispositivo OpenCL.
+GPU_EMBED = False
 
 
 def sh(cmd: str, timeout: int = 600) -> str:
@@ -107,9 +110,10 @@ def evaluate(
         with open(gpath, "wb") as f:
             f.write(np.asarray(genome_z, np.float32).tobytes())
         emb = f"{TMP}/vib_candidate.gguf"
+        gpu_flag = " --gpu" if GPU_EMBED else ""
         sh(
             f"{EMBED} --model {MODEL} --out {emb} --weights {W_DIR} "
-            f"--genome {gpath} --tau {tau:.4f}"
+            f"--genome {gpath} --tau {tau:.4f}{gpu_flag}"
         )
         out = sh(
             f"{KL_EVAL} --orig {MODEL} --sparse {emb} --prompts {PROMPTS} "
@@ -145,7 +149,15 @@ def main() -> None:
     )
     ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo topología)")
     ap.add_argument("--n-pos", type=int, default=N_POS, help="posiciones del evaluador KL")
+    ap.add_argument(
+        "--gpu",
+        action="store_true",
+        help="decodificar la topología CPPN en la GPU (embed_sparse --gpu); "
+        "necesario para ALIA-40b (inviable en CPU). Sin él, decode por CPU.",
+    )
     args = ap.parse_args()
+    global GPU_EMBED
+    GPU_EMBED = args.gpu
 
     if args.streaming and not (W_DIR / "meta.json").exists():
         print(sh(f"{DUMP_WEIGHTS} --model {MODEL} --out {W_DIR}").strip(), flush=True)

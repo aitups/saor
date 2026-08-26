@@ -6,4 +6,9 @@ license.workspace = true
 description = "Cómputo OpenCL 3.0 sobre la RTX 4050: contexto, buffers y kernels (CPPN, SpMM, Gram/CKA) con mitigación WDDM/TDR."
 
 [dependencies]
-opencl3 = "0.5"
+# cl3 con `dynamic`: carga `OpenCL.dll` en runtime vía LoadLibrary, sin
+# requerir `OpenCL.lib` en tiempo de link (mismo patrón que hayai-opencl).
+# Así los binarios linkean en máquinas sin el SDK, solo con el runtime del
+# driver NVIDIA/AMD/Intel.
+opencl3 = "0.12"
+cl3 = { version = "0.13", default-features = false, features = ["dynamic"] }

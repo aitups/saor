@@ -87,6 +87,7 @@ pub fn cmd(args: &[String]) -> ExitCode {
         replacements.push(BlockReplacement {
             tensor: tensor.clone(),
             block,
+            weights_file: None,
         });
     }
 

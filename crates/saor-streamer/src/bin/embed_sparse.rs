@@ -1,17 +1,23 @@
 //! `embed_sparse`: embebe bloques FFN dispersos (D16) en una copia del GGUF del
-//! profesor, desde un perfil de esparsidad por capa (poda por magnitud).
+//! profesor, desde un perfil de esparsidad por capa (poda por magnitud) o desde
+//! la topología CPPN global (`--genome`, Vía B).
 //!
 //!   embed_sparse --model <orig.gguf> --out <embedded.gguf>
 //!               --weights <dir> --sparsities <file> [--tau 0.42]
+//!   embed_sparse --model <orig.gguf> --out <embedded.gguf>
+//!               --weights <dir> --genome <genome.bin> --tau <f> [--gpu]
 //!
 //! `--weights` es el directorio de `dump_weights` (hayai): `w.{layer}.{block}.bin`
 //! con `d_out*d_in` f32 en orden i-mayor. `--sparsities` tiene un float por línea
-//! (esparsidad del gate por capa; 0 = densa). Reescritura **streaming** (sin
-//! cargar el archivo completo). Es el camino de producción para el evaluador de
-//! la frontera de Pareto en modelos grandes (ALIA/Qwen) sin depender del OpenCL.
+//! (esparsidad del gate por capa; 0 = densa). `--genome` decodifica la topología
+//! CPPN global por capa (`y_layer`); `--gpu` ejecuta el decode en la GPU vía el
+//! kernel OpenCL `cppn_decode_adj` (necesario para ALIA-40b: 201M conexiones × 48
+//! capas ≈ 9.6G evaluaciones, inviable en CPU). Reescritura **streaming** (sin
+//! cargar el archivo completo).
 
 use std::path::PathBuf;
 
+use saor_opencl::compute::ClEngine;
 use saor_streamer::gguf_embed::{rewrite_embedded, BlockReplacement};
 use saor_streamer::gguf_sparse::SparseBlock;
 
@@ -92,6 +98,7 @@ fn main() -> Result<(), String> {
     let mut sparsities: Option<PathBuf> = None;
     let mut genome: Option<PathBuf> = None;
     let mut tau = 0.42f32;
+    let mut use_gpu = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -121,6 +128,7 @@ fn main() -> Result<(), String> {
                     tau = v;
                 }
             }
+            "--gpu" => use_gpu = true,
             other => {
                 return Err(format!("argumento desconocido '{other}'"));
             }
@@ -130,6 +138,9 @@ fn main() -> Result<(), String> {
     let model = model.ok_or("falta --model <gguf>")?;
     let out = out.ok_or("falta --out <gguf>")?;
     let weights_dir = weights_dir.ok_or("falta --weights <dir>")?;
+    if use_gpu && genome.is_none() {
+        return Err("--gpu requiere --genome <genome.bin>".into());
+    }
 
     let meta = std::fs::read_to_string(weights_dir.join("meta.json"))
         .map_err(|e| format!("leer meta.json: {e}"))?;
@@ -159,6 +170,18 @@ fn main() -> Result<(), String> {
         None => Vec::new(),
     };
 
+    // Motor OpenCL para el decode por GPU (Vía B). `--gpu` es explícito: sin
+    // GPU disponible falla (no hay fallback silencioso — en ALIA-40b el decode
+    // por CPU es inviable: 9.6G evaluaciones de CPPN).
+    let mut engine: Option<ClEngine> = None;
+    if use_gpu {
+        let mut e = ClEngine::init()
+            .map_err(|err| format!("--gpu solicitado pero no hay dispositivo OpenCL: {err}"))?;
+        e.prepare()?;
+        eprintln!("embed_sparse: decode por GPU en '{}'", e.device_name());
+        engine = Some(e);
+    }
+
     let mut replacements: Vec<BlockReplacement> = Vec::new();
     for layer in 0..n_layers {
         let y_layer = saor_domain::cppn::layer_coord(layer, n_layers);
@@ -182,8 +205,17 @@ fn main() -> Result<(), String> {
                 ));
             }
             // Adyacencia y conteo de activos de esta capa/bloque.
-            let (adjacency, active_count) = if let Some(g) = &cppn_genome {
-                // Vía B: topología CPPN global (coordenada de capa y_layer).
+            let (adjacency, active_count) = if let Some(e) = &engine {
+                // GPU (Vía B): kernel `cppn_decode_adj` — la coordenada `y_layer`
+                // se deriva dentro del kernel a partir de (layer, n_layers),
+                // idéntica a `saor_domain::cppn::layer_coord`.
+                let g = cppn_genome.as_ref().expect("--gpu requiere --genome");
+                let flat = g.flatten();
+                let (adj, act) =
+                    e.cppn_decode_adjacency(&flat, d_in, d_out, tau, layer, n_layers)?;
+                (adj, act as usize)
+            } else if let Some(g) = &cppn_genome {
+                // Vía B CPU: topología CPPN global (coordenada de capa y_layer).
                 let topo = saor_domain::topology::instantiate_layer(g, d_in, d_out, tau, y_layer);
                 (topo.adjacency_bits, topo.weights.len())
             } else {
@@ -251,13 +283,15 @@ fn main() -> Result<(), String> {
     }
 
     let report = rewrite_embedded(&model, &out, &replacements)?;
+    let device = engine.as_ref().map(|e| e.device_name()).unwrap_or_else(|| "cpu".into());
     println!(
-        "{{\"ok\":true,\"out\":{},\"replaced\":{},\"kept_bytes\":{},\"sparse_bytes\":{},\"total_bytes\":{}}}",
+        "{{\"ok\":true,\"out\":{},\"replaced\":{},\"kept_bytes\":{},\"sparse_bytes\":{},\"total_bytes\":{},\"device\":{}}}",
         serde_json::Value::String(out.display().to_string()),
         report.replaced,
         report.kept_bytes,
         report.sparse_bytes,
-        report.total_bytes
+        report.total_bytes,
+        serde_json::Value::String(device)
     );
     Ok(())
 }

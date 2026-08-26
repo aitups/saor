@@ -599,10 +599,35 @@
 - **Costo por candidato** (~40 s en SmolLM2): el decode CPPN en Rust
   (`instantiate_layer`, 26M conexiones × 30 capas) + la reescritura GGUF + el
   kl_eval. Con `--n-pos 8` una generación (22 candidatos) ≈ 15 min.
-- **Pendiente de rendimiento:** para ALIA-40b el decode CPPN en Rust (201M
-  conexiones × 48 capas ≈ 9.6G evals) es inviable; requiere el kernel OpenCL
-  (`cppn_decode.cl`) en el `embed_sparse` — el pipeline de CPU queda para
-  SmolLM2/Qwen y el kernel para la máquina con el SDK OCL.
+- **Pendiente de rendimiento:** ~~el decode CPPN en Rust (201M conexiones × 48
+  capas ≈ 9.6G evals) es inviable; requiere el kernel OpenCL~~ — **resuelto en
+  D32**: `embed_sparse --genome --gpu` usa el kernel `cppn_decode_adj` (GPU 2 s
+  vs CPU 33 s en SmolLM2; escala a ALIA vía dispatches fragmentados WDDM).
+
+## D32 — Kernel OpenCL completado: `embed_sparse --genome --gpu`
+- **Linkeo dinámico (cl3 `dynamic`)**: saor-opencl pasa a opencl3 0.12 + cl3 0.13
+  con `dynamic` (carga OpenCL.dll en runtime, patrón de hayai-opencl). Los
+  binarios linkean en máquinas sin el SDK (solo el runtime del driver); antes
+  `LNK1181: OpenCL.lib` impedía compilar `saor-engine`. Todas las llamadas
+  opencl3 (create/set_arg/enqueue) se marcaron `unsafe` y se envolvieron en
+  helpers (`set_arg`, buffer/write/read).
+- **`embed_sparse --genome --gpu`**: decodifica la topología CPPN de cada
+  (capa, bloque) con el kernel `cppn_decode_adj` (solo adyacencia, sin w_out —
+  el warm-start conserva los pesos del profesor). `--gpu` es explícito y sin
+  fallback silencioso (en ALIA el decode CPU es inviable). El reporte incluye
+  `"device"`.
+- **Validado en esta máquina (RTX 4050):**
+  - `kernels-run` ahora cubre el decode multi-capa: capa 7/30 (y_layer ≠ 0),
+    tau 0.30 → 1893/3072 activos (patrón mixto), **bit-exacto** con
+    `instantiate_layer` (`adj_bytes_diff_layer=0`).
+  - SmolLM2 best-genome: CPU KL 1.682290 vs GPU KL 1.682447 (Δ 1e-4). La única
+    diferencia: 1 conexión en 80M donde `l_ij ≈ tau` y el f32 de sin/tanh/exp
+    difiere 1 ULP entre OpenCL y Rust std (esperable; irrelevante para la KL).
+  - **Rendimiento: GPU 2 s vs CPU 33 s en SmolLM2 (16.5×)** — en ALIA-40b
+    (201M conexiones × 48 capas ≈ 9.6G evals) el GPU escala vía dispatch
+    fragmentados (WDDM), el CPU no.
+- **`via_b_evolve --gpu`**: el loop CMA-ES pasa `--gpu` al embed (acelera cada
+  candidato de ~30 s a ~2 s en SmolLM2; en ALIA es la única vía viable).
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
