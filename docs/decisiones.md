@@ -587,6 +587,10 @@
   esperado). El mejor genoma validado con evaluación completa (n_pos 24):
   **KL = 1.68 @ D_arch 0.078** — 4.3× menos KL que el genoma inicial, con
   D_arch pegado al target 0.10.
+- **Perfil por capa del genoma evolucionado** (decode de referencia): escalón —
+  capas 0–15 al 95–99% esparsas, capas 16–29 progresivamente densas (94 → 85%),
+  media 92.2%. El CMA-ES reproduce el patrón de la frontera de ALIA: las capas
+  tempranas son prescindibles y la información se concentra antes de la cabeza.
 - **Costo por candidato** (~40 s en SmolLM2): el decode CPPN en Rust
   (`instantiate_layer`, 26M conexiones × 30 capas) + la reescritura GGUF + el
   kl_eval. Con `--n-pos 8` una generación (22 candidatos) ≈ 15 min.
