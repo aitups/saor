@@ -88,6 +88,7 @@ def evaluate(
     genome_z: np.ndarray | None = None,
     tau: float = TAU_CPPN,
     streaming: bool = False,
+    n_pos: int = N_POS,
 ) -> dict:
     """Evalúa un candidato. `genome_z=None` → poda por magnitud (densidades);
     con genoma → topología CPPN real (`eval_sparse --genome` o `embed_sparse
@@ -98,7 +99,7 @@ def evaluate(
             f.write("\n".join(f"{s:.4f}" for s in sparsities) + "\n")
         out = sh(
             f'{EVAL} --model {MODEL} --prompts {PROMPTS} --sparsities {path} '
-            f"--n-positions {N_POS} --device cpu"
+            f"--n-positions {n_pos} --device cpu"
         )
     elif streaming:
         # Path de producción: CPPN → embed D16 → kl_eval (StreamingGenerator).
@@ -112,7 +113,7 @@ def evaluate(
         )
         out = sh(
             f"{KL_EVAL} --orig {MODEL} --sparse {emb} --prompts {PROMPTS} "
-            f"--n-positions {N_POS} --device auto"
+            f"--n-positions {n_pos} --device auto"
         )
         os.remove(emb)
     else:
@@ -121,7 +122,7 @@ def evaluate(
             f.write(np.asarray(genome_z, np.float32).tobytes())
         out = sh(
             f'{EVAL} --model {MODEL} --prompts {PROMPTS} --genome {gpath} '
-            f"--tau {tau:.4f} --n-positions {N_POS} --device cpu"
+            f"--tau {tau:.4f} --n-positions {n_pos} --device cpu"
         )
     return json.loads(out.strip())
 
@@ -143,6 +144,7 @@ def main() -> None:
         help="topología CPPN REAL en el path de producción (embed_sparse --genome + kl_eval)",
     )
     ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo topología)")
+    ap.add_argument("--n-pos", type=int, default=N_POS, help="posiciones del evaluador KL")
     args = ap.parse_args()
 
     if args.streaming and not (W_DIR / "meta.json").exists():
@@ -167,7 +169,8 @@ def main() -> None:
             if topology:
                 # Topología CPPN real: maximizar D_arch sujeto a KL <= 0.50.
                 sps = None
-                r = evaluate([], genome_z=z, tau=args.tau, streaming=args.streaming)
+                r = evaluate([], genome_z=z, tau=args.tau, streaming=args.streaming,
+                             n_pos=args.n_pos)
                 d_arch, kl = r["d_arch_global"], r["kl_global"]
                 fitness = d_arch - LAMBDA_PEN * max(0.0, kl - KL_MAX)
             else:

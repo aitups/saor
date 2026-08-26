@@ -572,6 +572,24 @@
   abrupto (no una campana suave) para ALIA — la coordenada de capa lo permite
   (transición sigmoide empinada). La métrica del perfil es la que manda.
 
+## D31 — Vía B completa: `embed_sparse --genome` + loop CMA-ES streaming
+- **`embed_sparse --genome <bin> --tau <f>`**: decodifica la topología CPPN global
+  de CADA capa (sustrato v5, `instantiate_layer` con `y_layer`) y conserva los
+  pesos del profesor en las posiciones activas. Con esto el pipeline
+  **CPPN → embed D16 → kl_eval → CMA-ES** queda cerrado de punta a punta:
+  - `via_b_evolve.py --streaming` ejecuta el loop con la topología REAL (no el
+    proxy de densidad): por candidato escribe el genoma, `embed_sparse --genome`,
+    `kl_eval` (StreamingGenerator, GPU) y el CMA-ES actualiza.
+  - Validación en SmolLM2: gen 0 → KL 5.57 @ D_arch 0.154 (el genoma inicial
+    aleatorio); el loop corre y guarda el mejor genoma.
+- **Costo por candidato** (~40 s en SmolLM2): el decode CPPN en Rust
+  (`instantiate_layer`, 26M conexiones × 30 capas) + la reescritura GGUF + el
+  kl_eval. Con `--n-pos 8` una generación (22 candidatos) ≈ 15 min.
+- **Pendiente de rendimiento:** para ALIA-40b el decode CPPN en Rust (201M
+  conexiones × 48 capas ≈ 9.6G evals) es inviable; requiere el kernel OpenCL
+  (`cppn_decode.cl`) en el `embed_sparse` — el pipeline de CPU queda para
+  SmolLM2/Qwen y el kernel para la máquina con el SDK OCL.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
