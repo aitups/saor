@@ -548,6 +548,30 @@
   - FFN denso → gemv Q4 en GPU; FFN disperso → SpMM CSR en GPU.
 - **Tests:** 154 Rust verdes (incluye `opencl_spmm_csr_matches_cpu`).
 
+## D30 — El perfil de ALIA es un escalón, no una campana (frontera completa)
+- **SpMM GPU también en el prefill:** `prefill_wave.rs` usa el helper
+  `spmm_csr` (OpenCL si hay pool) para gate/up/down — todo el path disperso del
+  streaming va a GPU.
+- **Frontera de ALIA-40b completada (GPU):**
+  | perfil | D_arch | KL |
+  |---|---|---|
+  | uniforme sp 0.1 (48 capas) | 0.033 | 0.958 |
+  | **medio sp 0.4 (16–31)** | 0.044 | **0.449** |
+  | **medio sp 0.6 (16–31)** | 0.067 | **0.936** |
+  | uniforme sp 0.2 (48 capas) | 0.067 | **2.151** |
+  | campana suave (bordes 0.1 → centro 0.5) | 0.100 | 4.667 |
+- **Lectura clave (2):**
+  1. **A mismo D_arch (0.067), el perfil medio da 2.3× menos KL que el uniforme**
+     (0.94 vs 2.15) — el perfil es el 80% del juego en ALIA.
+  2. **La campana suave es mala** (KL 4.67): las capas tempranas de ALIA son
+     **hipersensibles** — incluso 10% de esparsidad en los bordes es carísimo.
+     El óptimo es un **escalón**: capas 16–31 esparsas (hasta 0.6), el resto
+     completamente densas. Frontera factible del perfil medio ≈ D_arch 0.050
+     @ KL 0.50; el uniforme apenas llega a ~0.025.
+- **Implicación Vía B:** el CPPN global con `y_layer` debe aprender un escalón
+  abrupto (no una campana suave) para ALIA — la coordenada de capa lo permite
+  (transición sigmoide empinada). La métrica del perfil es la que manda.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
