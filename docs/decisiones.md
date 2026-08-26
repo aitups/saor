@@ -582,6 +582,11 @@
     `kl_eval` (StreamingGenerator, GPU) y el CMA-ES actualiza.
   - Validación en SmolLM2: gen 0 → KL 5.57 @ D_arch 0.154 (el genoma inicial
     aleatorio); el loop corre y guarda el mejor genoma.
+- **Resultado de evolución (4 gens, n_pos 8):** el CMA-ES baja la KL
+  7.24 → 6.84 → 2.39 (gen 2, mejor); gen 3 diverge (8.9, sigma alta — ruido
+  esperado). El mejor genoma validado con evaluación completa (n_pos 24):
+  **KL = 1.68 @ D_arch 0.078** — 4.3× menos KL que el genoma inicial, con
+  D_arch pegado al target 0.10.
 - **Costo por candidato** (~40 s en SmolLM2): el decode CPPN en Rust
   (`instantiate_layer`, 26M conexiones × 30 capas) + la reescritura GGUF + el
   kl_eval. Con `--n-pos 8` una generación (22 candidatos) ≈ 15 min.
