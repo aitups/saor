@@ -185,6 +185,17 @@ def main() -> None:
         order = sorted(range(len(scored)), key=lambda i: -scored[i][0])
         state.update(pop, order[: params.mu])
         gen_best = scored[0]
+        if gen > 0 and gen_best[0] <= prev_fitness:
+            # Reinicio de sigma: el paso no mejoró (CMA-ES divergente). Re-seed
+            # con el mejor genoma conocido y sigma inicial para estabilizar.
+            mean0 = best_kl["z"].copy()
+            state = CmaEsState(params, mean0)
+            print(
+                f"  [restart sigma gen {gen}: fitness {prev_fitness:.3f} "
+                f"-> {gen_best[0]:.3f}]",
+                flush=True,
+            )
+        prev_fitness = gen_best[0]
         history.append(
             {
                 "gen": gen,
