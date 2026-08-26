@@ -487,6 +487,29 @@
   esparsas → D_arch 0.058 @ KL 0.073 (tolerancia altísima en capas medias).
   El `alia_emb2.gguf` (23 GB) se movió a `d:\Documents\pySrc\.scratch`.
 
+## D27 — Frontera de ALIA-40b (Q4_K_M, 48 capas) en el path de producción
+- **Modelo:** `ALIA-40b-instruct-2606.Q4_K_M.gguf` (22.9 GB) descargado de
+  `mradermacher/ALIA-40b-instruct-2606-GGUF` a `d:\Documents\pySrc\.scratch`.
+  48 capas, llama estándar (sin SSM), gate 8192×24576.
+- **Escalado del pipeline a 40B:**
+  - `dump_weights --blocks gate` (solo gates → 36 GB F32 en vez de ~100 GB).
+  - `embed_sparse`: pesos F32 **streaming a fichero** (`BlockReplacement.weights_file`)
+    + sort de magnitud **paralelo (rayon)** + caché de orden — sin OOM en 16 GB
+    RAM (antes: 35 GB de pesos en RAM → fallo de asignación).
+  - `kl_eval`: dos `StreamingGenerator` (original + embebido) en lockstep,
+    ~45 min por punto (forward de 40B en CPU, 4 posiciones).
+- **Frontera de ALIA medida:**
+  | perfil | D_arch | KL |
+  |---|---|---|
+  | uniforme gate sp 0.1 (48 capas) | 0.033 | 0.958 |
+  | **medio sp 0.4 (solo capas 16–31)** | 0.044 | **0.449** |
+- **Hallazgo clave:** la tolerancia de ALIA está **concentrada en las capas
+  medias** — esparcir solo las 16 capas centrales a 0.4 da MÁS D_arch (0.044)
+  con MENOS de la mitad de KL (0.449 vs 0.958) que el uniforme. Es la validación
+  extrema de la compresión variable por modelo (40B): el perfil importa tanto o
+  más que la densidad total. El CPPN global de Vía B (coordenada `y_layer`)
+  expresa exactamente esta topología tipo campana.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
