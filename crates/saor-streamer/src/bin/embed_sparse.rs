@@ -90,6 +90,7 @@ fn main() -> Result<(), String> {
     let mut out: Option<PathBuf> = None;
     let mut weights_dir: Option<PathBuf> = None;
     let mut sparsities: Option<PathBuf> = None;
+    let mut genome: Option<PathBuf> = None;
     let mut tau = 0.42f32;
     let mut i = 1;
     while i < args.len() {
@@ -110,6 +111,10 @@ fn main() -> Result<(), String> {
                 i += 1;
                 sparsities = args.get(i).map(PathBuf::from);
             }
+            "--genome" => {
+                i += 1;
+                genome = args.get(i).map(PathBuf::from);
+            }
             "--tau" => {
                 i += 1;
                 if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
@@ -125,18 +130,6 @@ fn main() -> Result<(), String> {
     let model = model.ok_or("falta --model <gguf>")?;
     let out = out.ok_or("falta --out <gguf>")?;
     let weights_dir = weights_dir.ok_or("falta --weights <dir>")?;
-    let sparsities = sparsities.ok_or("falta --sparsities <file>")?;
-
-    let sp_raw: Vec<String> = std::fs::read_to_string(&sparsities)
-        .map_err(|e| format!("leer sparsities: {e}"))?
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let sp: Vec<f32> = sp_raw
-        .iter()
-        .map(|l| l.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0))
-        .collect();
 
     let meta = std::fs::read_to_string(weights_dir.join("meta.json"))
         .map_err(|e| format!("leer meta.json: {e}"))?;
@@ -144,12 +137,31 @@ fn main() -> Result<(), String> {
         serde_json::from_str(&meta).map_err(|e| format!("parse meta.json: {e}"))?;
     let n_layers = meta_json["n_layers"].as_u64().unwrap_or(0) as usize;
 
+    // Modo topología CPPN (Vía B): `--genome <genome.bin> --tau <f>` decodifica la
+    // adyacencia de cada capa (sustrato v5 con y_layer) y conserva los pesos del
+    // profesor en las posiciones activas. Sin él, `--sparsities` (poda por magnitud).
+    let cppn_genome: Option<saor_domain::cppn::CppnGenome> = match &genome {
+        Some(p) => {
+            let flat = read_f32_bin(p)?;
+            Some(saor_domain::cppn::CppnGenome::from_flatten(&flat))
+        }
+        None => None,
+    };
+
+    let sp: Vec<f32> = match &sparsities {
+        Some(p) => std::fs::read_to_string(p)
+            .map_err(|e| format!("leer sparsities: {e}"))?
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0))
+            .collect(),
+        None => Vec::new(),
+    };
+
     let mut replacements: Vec<BlockReplacement> = Vec::new();
     for layer in 0..n_layers {
-        let layer_sp = sp.get(layer).copied().unwrap_or(0.0);
-        if layer_sp <= 0.0 {
-            continue;
-        }
+        let y_layer = saor_domain::cppn::layer_coord(layer, n_layers);
         for block in ["ffn_gate", "ffn_up", "ffn_down"] {
             let key = format!("blk.{layer}.{block}");
             let d_in = meta_json[&key]["d_in"].as_u64().unwrap_or(0) as usize;
@@ -169,32 +181,50 @@ fn main() -> Result<(), String> {
                     w.len()
                 ));
             }
-            // Solo el gate se poda por capa; up/down se mantienen densos (Vía A).
-            let block_sp = if block == "ffn_gate" { layer_sp } else { 0.0 };
-            if block_sp <= 0.0 {
-                continue; // no reemplazar: el tensor denso original se conserva
-            }
-            // Caché del orden por magnitud (invariante a la esparsidad): el
-            // primer punto del barrido lo escribe, los siguientes lo reusan.
-            let order_path = weights_dir.join(format!("order.{layer}.{block}.bin"));
-            let order_cache: Option<Vec<u32>> = match std::fs::read(&order_path) {
-                Ok(raw) if raw.len() == w.len() * 4 => Some(
-                    raw.chunks_exact(4)
-                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect(),
-                ),
-                _ => {
-                    write_order_cache(&w, &order_path);
-                    None
+            // Adyacencia y conteo de activos de esta capa/bloque.
+            let (adjacency, active_count) = if let Some(g) = &cppn_genome {
+                // Vía B: topología CPPN global (coordenada de capa y_layer).
+                let topo = saor_domain::topology::instantiate_layer(g, d_in, d_out, tau, y_layer);
+                (topo.adjacency_bits, topo.weights.len())
+            } else {
+                let layer_sp = sp.get(layer).copied().unwrap_or(0.0);
+                let block_sp = if block == "ffn_gate" { layer_sp } else { 0.0 };
+                if block_sp <= 0.0 {
+                    continue; // no reemplazar: el tensor denso original se conserva
                 }
+                // Caché del orden por magnitud (invariante a la esparsidad).
+                let order_path = weights_dir.join(format!("order.{layer}.{block}.bin"));
+                let order_cache: Option<Vec<u32>> = match std::fs::read(&order_path) {
+                    Ok(raw) if raw.len() == w.len() * 4 => Some(
+                        raw.chunks_exact(4)
+                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect(),
+                    ),
+                    _ => {
+                        write_order_cache(&w, &order_path);
+                        None
+                    }
+                };
+                let (adj, _) = magnitude_prune(
+                    &w,
+                    d_in,
+                    d_out,
+                    block_sp.min(0.999),
+                    order_cache.as_deref(),
+                );
+                let n = adj.iter().map(|b| b.count_ones() as usize).sum();
+                (adj, n)
             };
-            let (adjacency, weights) = magnitude_prune(
-                &w,
-                d_in,
-                d_out,
-                block_sp.min(0.999),
-                order_cache.as_deref(),
-            );
+            // Pesos del profesor en las posiciones activas (escaneo i-mayor).
+            let mut weights = Vec::with_capacity(active_count);
+            for i in 0..d_in {
+                for j in 0..d_out {
+                    let conn = i * d_out + j;
+                    if adjacency[conn / 8] & (1 << (conn % 8)) != 0 {
+                        weights.push(w[j * d_in + i]);
+                    }
+                }
+            }
             // Los pesos F32 se escriben a fichero (streaming): para ALIA-40b
             // (201M activos × 48 capas ≈ 35 GB) no caben en RAM.
             let wfile = weights_dir.join(format!("wdata.{layer}.{block}.bin"));
