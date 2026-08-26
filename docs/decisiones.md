@@ -510,6 +510,28 @@
   más que la densidad total. El CPPN global de Vía B (coordenada `y_layer`)
   expresa exactamente esta topología tipo campana.
 
+## D28 — Frontera ALIA en GPU (OpenCL) + curva uniforme completa
+- **GPU/OpenCL:** `hayai --device auto` detecta la RTX 4050 (6 GB, OpenCL 3.0
+  CUDA) + Intel UHD (pool hetero). Para el evaluador de 40B se necesitó:
+  - **`kl_eval` secuencial**: un scratch SVM a la vez (los logits del original se
+    guardan en RAM y el generador esparso corre después) — dos generadores
+    simultáneos agotaban la VRAM.
+  - **`MemoryStrategy::Minimal`** (2 slots ping-pong) en vez de AutoFit — la
+    ventana residente de 40B superaba los 6 GB.
+- **Frontera uniforme ALIA completada (GPU):**
+  | perfil | D_arch | KL |
+  |---|---|---|
+  | uniforme sp 0.1 (48 capas) | 0.033 | 0.958 |
+  | uniforme sp 0.2 | 0.067 | **2.151** |
+  | **medio sp 0.4 (16–31)** | 0.044 | **0.449** |
+- **Lectura:** la curva uniforme explota (KL 0.96 → 2.15 para sp 0.1 → 0.2)
+  mientras el perfil medio mantiene KL < 0.5 con más D_arch. En ALIA-40b el
+  perfil es el 80% del juego: la optimización topológica (Vía B) es la ruta.
+- **Costo por punto:** ~40 min en GPU (el CSR disperso del modelo embebido corre
+  en CPU: `spmm_csr_cpu`; la atención y el modelo original van a GPU). Para
+  acelerar el path esparso haría falta el SpMM CSR en OpenCL (kernel `spmm.cl`
+  de saor) dentro del `StreamingGenerator`.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
