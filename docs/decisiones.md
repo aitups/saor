@@ -532,6 +532,22 @@
   acelerar el path esparso haría falta el SpMM CSR en OpenCL (kernel `spmm.cl`
   de saor) dentro del `StreamingGenerator`.
 
+## D29 — SpMM CSR en OpenCL para el FFN disperso del streaming
+- **Decisión:** el `StreamingGenerator` ejecuta ahora el FFN disperso embebido
+  (D16) con **SpMM CSR en OpenCL** cuando hay pool (`run_ffn_block` → nuevo
+  helper `spmm_csr`: `orch.opencl_engine().spmm_csr(...)` si hay GPU, si no
+  `spmm_csr_cpu`). El kernel ya existía en `hayai-opencl` (validado contra la
+  referencia densa); solo faltaba cablearlo al path del streaming.
+- **Validación:** `kl_eval` SmolLM2 sp0.1 CPU vs GPU → **KL 0.754375 vs
+  0.754372** (idénticos, 6 decimales). El path esparso ahora se acelera con la
+  RTX 4050 (los bloques CSR del 40B dejan de correr en CPU).
+- **Estado GPU/OpenCL completo:**
+  - `hayai --device auto` detecta RTX 4050 + Intel UHD (pool hetero).
+  - `kl_eval` secuencial (un scratch SVM a la vez) + `MemoryStrategy::Minimal`
+    para caber en 6 GB VRAM.
+  - FFN denso → gemv Q4 en GPU; FFN disperso → SpMM CSR en GPU.
+- **Tests:** 154 Rust verdes (incluye `opencl_spmm_csr_matches_cpu`).
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
