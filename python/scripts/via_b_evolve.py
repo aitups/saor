@@ -54,7 +54,9 @@ KL_DEVICE = "auto"
 GPU_EMBED = False
 
 
-def sh(cmd: str, timeout: int = 600) -> str:
+def sh(cmd: str, timeout: int = 3600) -> str:
+    # Timeout alto (1 h): el kl_eval de ALIA-40b CPU-bound tarda ~20-25 min por
+    # candidato (el SpMM CSR denso no cabe con el modelo en 6 GB y cae a CPU).
     r = subprocess.run(["cmd", "/c", cmd], capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"{cmd}\n{r.stderr[-1200:]}")
