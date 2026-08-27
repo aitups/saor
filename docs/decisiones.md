@@ -629,6 +629,35 @@
 - **`via_b_evolve --gpu`**: el loop CMA-ES pasa `--gpu` al embed (acelera cada
   candidato de ~30 s a ~2 s en SmolLM2; en ALIA es la única vía viable).
 
+## D33 — Qwen3.5-4B y ALIA-40b: fases completadas y evolución Vía B en curso
+- **Qwen3.5-4B** (`Qwen_Qwen3.5-4B-Q4_K_M.gguf`, 2.81 GB): arquitectura híbrida
+  (D23). 33 capas (32 transformadoras + 1 NextN/MTP), gate `2560×9216`.
+  - Dump gate: `w_qwen35` (33 × 90 MB).
+  - **Frontera uniforme medida** (n_pos 8, GPU): sp 0.05 → KL 0.045 @ D_arch
+    0.017; sp 0.10 → 0.108 @ 0.033; sp 0.15 → 0.173 @ 0.050; sp 0.20 → 0.296 @
+    0.067; sp 0.25 → 0.463 @ 0.083. El 4B es muy robusto a la poda del gate.
+  - **Evolución Vía B** lanzada (4 gens, `--streaming --gpu`, n_pos 8).
+- **ALIA-40b**: dump gate existente (`w_alia`, 48 × 768 MB).
+  - **Frontera uniforme re-medida** (n_pos 4): sp 0.1 → KL 0.96 @ 0.033;
+    sp 0.2 → 2.15 @ 0.067; **sp 0.4 → 3.24 @ 0.133** (el archivo de 43 GB
+    completo; la medida previa de 0.45 era de un archivo parcial/corrupto).
+  - **Investigación OOM resuelta:** los fallos históricos
+    (`CL_MEM_OBJECT_ALLOCATION_FAILURE` / `UnexpectedEof`) eran de **archivos
+    GGUF parciales** (carrera entre dos `embed_sparse` concurrentes sobre los
+    mismos `wdata.*` de `w_alia`) + estado pre-D29. Con el archivo completo el
+    kl_eval del 40B **no OOMa** (RTX 4050, ~2.1 GB VRAM). Nota de operación:
+    **nunca lanzar dos `embed_sparse` sobre el mismo `--weights`**, y no tocar
+    los `wdata.*` mientras un embed corre.
+  - **Coste kl_eval ALIA**: ~20–25 min por candidato a n_pos 4. Cuando los
+    gates quedan densos (>~50%), el SpMM CSR no cabe con el modelo en 6 GB y el
+    pool OpenCL cae a CPU (GPU al 1%); con gates esparsos la GPU se activa.
+  - **Evolución Vía B** lanzada (4 gens, `--streaming --gpu`, n_pos 4, ~1 día).
+- **Rendimiento embed ALIA**: decode CPPN GPU ~2 s; reescritura streaming ~5 min
+  (~23 GB escritos por candidato). El genoma evolucionado de SmolLM2 **no
+  transfiere** a ALIA (el sustrato 8192×24576 muestrea la superficie CPPN de
+  forma distinta → topología distinta); la evolución de ALIA debe encontrar el
+  suyo.
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
