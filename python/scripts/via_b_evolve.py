@@ -112,10 +112,10 @@ def evaluate(
         )
     elif streaming:
         # Path de producción: CPPN → embed D16 → kl_eval (StreamingGenerator).
-        gpath = f"{TMP}/vib_genome.bin"
+        gpath = f"{TMP}/vib_genome_{NAME}.bin"
         with open(gpath, "wb") as f:
             f.write(np.asarray(genome_z, np.float32).tobytes())
-        emb = f"{TMP}/vib_candidate.gguf"
+        emb = f"{TMP}/vib_candidate_{NAME}.gguf"
         gpu_flag = " --gpu" if GPU_EMBED else ""
         sh(
             f"{EMBED} --model {MODEL} --out {emb} --weights {W_DIR} "
@@ -127,7 +127,7 @@ def evaluate(
         )
         os.remove(emb)
     else:
-        gpath = f"{TMP}/vib_genome.bin"
+        gpath = f"{TMP}/vib_genome_{NAME}.bin"
         with open(gpath, "wb") as f:
             f.write(np.asarray(genome_z, np.float32).tobytes())
         out = sh(
@@ -138,6 +138,9 @@ def evaluate(
 
 
 def main() -> None:
+    # Los globals se declaran al inicio: los `default=` de argparse leen los
+    # valores de módulo (SmolLM2) y luego se reasignan desde los args.
+    global GPU_EMBED, MODEL, N_LAYERS, D_IN, D_OUT, W_DIR, KL_DEVICE, NAME
     ap = argparse.ArgumentParser(description="CMA-ES global Vía B (CPPN con y_layer)")
     ap.add_argument("--gens", type=int, default=10)
     ap.add_argument("--seed", type=int, default=7)
@@ -175,7 +178,6 @@ def main() -> None:
         help="prefijo de salidas (via_b_best_genome_<name>.bin, via_b_history_<name>.json)",
     )
     args = ap.parse_args()
-    global GPU_EMBED, MODEL, N_LAYERS, D_IN, D_OUT, W_DIR, KL_DEVICE, NAME
     GPU_EMBED = args.gpu
     MODEL = args.model
     N_LAYERS = args.n_layers
