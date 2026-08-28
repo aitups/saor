@@ -683,6 +683,25 @@
     del 27B era el deadlock de GPU concurrente, no el runtime.
   - Frontera uniforme en curso (5 puntos, secuencial, ~2.5 h).
 
+## D35 — Qwen3.8-27B: frontera completa + evolución Vía B en curso
+- **Frontera uniforme completada** (n_pos 4, GPU, secuencial — un solo proceso
+  OpenCL, regla D34):
+  | sp | D_arch | KL |
+  |---|---|---|
+  | 0.05 | 0.017 | **0.015** |
+  | 0.10 | 0.033 | 0.042 |
+  | 0.15 | 0.050 | 0.075 |
+  | 0.20 | 0.067 | 0.115 |
+  | 0.25 | 0.083 | **0.143** |
+- **Lectura:** el 27B es el modelo **más robusto** a la poda del gate de los
+  cuatro (KL 0.14 a sp 0.25, muy por debajo del target 0.5). El híbrido
+  gated-DeltaNet de 65 capas tolera la poda de forma excepcional — el FFN es
+  redundante en este modelo.
+- **Evolución Vía B** lanzada (4 gens, `--streaming --gpu`, n_pos 4, ~1-2 días
+  por el coste kl_eval de 27B, secuencial). El ranking de sensibilidad queda:
+  **27B < 4B << SmolLM2 << ALIA** (ALIA es ~70× más sensible que el 27B a la
+  misma densidad).
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
