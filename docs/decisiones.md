@@ -658,6 +658,31 @@
   forma distinta → topología distinta); la evolución de ALIA debe encontrar el
   suyo.
 
+## D34 — Resultados de las evoluciones Vía B (Qwen3.5-4B y ALIA-40b) + Qwen3.8-27B
+- **Qwen3.5-4B — evolución Vía B completada y validada:**
+  - Trayectoria: gen 0 KL 1.40 @ D_arch 0.16 → gen 1 **KL 0.080** @ 0.027 (best) →
+    gens 2-3 KL 0.14-0.38. Validación definitiva (n_pos 24): **KL 0.113 @
+    D_arch 0.027**. Genoma: `via_b_best_genome_qwen35.bin`.
+- **ALIA-40b — evolución Vía B completada y validada:**
+  - Trayectoria: gen 0 KL 3.07 @ 0.051 → gen 2 **KL 0.90 @ 0.018** (best).
+    Validación definitiva (n_pos 8): **KL 0.776 @ D_arch 0.018**. Genoma:
+    `via_b_best_genome_alia.bin`. El perfil decodificado es un **valle**
+    (99% esparso en los extremos → 92% en el medio). ALIA es el modelo más
+    sensible: KL ~0.78 a solo 1.8% de densidad arquitectónica (Qwen3.5-4B
+    logra KL 0.11 al 2.7%).
+- **Deadlock de GPU concurrente (hallazgo operacional):** dos procesos OpenCL
+  (`kl_eval --device auto`) simultáneos sobre la misma GPU **se cuelgan**
+  (CPU y GPU quedan idle tras un rato de cómputo). Diagnóstico: CPU deja de
+  crecer + GPU ~0% + proceso vivo = deadlock de pool. Regla: **un solo proceso
+  OpenCL a la vez** (los trabajos del pipeline deben serializarse).
+- **Qwen3.8-27B — runtime híbrido validado:**
+  - Dump gate: 65 capas `5120×17408` (51 s). Los 336 tensores SSM no
+    interfieren (el streaming los rutea vía `hybrid_layer_kind`).
+  - Smoke test (dense vs sparse sp 0.1, n_pos 4, GPU): **KL 0.042 @ D_arch
+    0.033** — el 27B es el más robusto a la poda del gate. El "hang" inicial
+    del 27B era el deadlock de GPU concurrente, no el runtime.
+  - Frontera uniforme en curso (5 puntos, secuencial, ~2.5 h).
+
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
   se trata como artefacto externo de referencia (D4).
