@@ -202,6 +202,9 @@ def main() -> None:
 
     history = []
     best_kl = {"kl": float("inf"), "darch": None, "z": None, "sps": None}
+    # Objetivo D20: max D_arch sujeto a KL <= 0.50 → máximo fitness. Este es el
+    # genoma que se guarda; best_kl se conserva como referencia (mínima KL).
+    best_fit = {"fitness": float("-inf"), "kl": None, "darch": None, "z": None, "sps": None}
     best_profile = {"kl": None, "darch": None, "z": None, "sps": None}
     topology = args.full or args.streaming
 
@@ -225,6 +228,10 @@ def main() -> None:
             scored.append((fitness, kl, d_arch, sps, z))
             if kl < best_kl["kl"]:
                 best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
+            if fitness > best_fit["fitness"]:
+                best_fit = {
+                    "fitness": fitness, "kl": kl, "darch": d_arch, "z": z, "sps": sps,
+                }
         scored.sort(key=lambda s: -s[0])
         order = sorted(range(len(scored)), key=lambda i: -scored[i][0])
         state.update(pop, order[: params.mu])
@@ -254,19 +261,28 @@ def main() -> None:
             flush=True,
         )
 
-    print(f"\n=== Mejor perfil para D_arch ~ {args.darch:.2f} (KL={best_kl['kl']:.4f}, "
-          f"D_arch_real={best_kl['darch']:.4f}) ===")
-    if best_kl["sps"] is not None:
-        print("  esparsidad por capa:", [round(s, 3) for s in best_kl["sps"]])
+    print(f"\n=== Mejor perfil (objetivo D20: max D_arch @ KL<=0.5) ===")
+    print(f"  fitness={best_fit['fitness']:.4f} KL={best_fit['kl']:.4f} "
+          f"D_arch={best_fit['darch']:.4f}")
+    print(f"  [referencia min-KL: KL={best_kl['kl']:.4f} @ D_arch={best_kl['darch']:.4f}]")
+    if best_fit["sps"] is not None:
+        print("  esparsidad por capa:", [round(s, 3) for s in best_fit["sps"]])
     with open(f"{TMP}/via_b_best_genome_{NAME}.bin", "wb") as f:
-        f.write(np.asarray(best_kl["z"], np.float32).tobytes())
+        f.write(np.asarray(best_fit["z"], np.float32).tobytes())
     print(f"  genoma guardado en {TMP}/via_b_best_genome_{NAME}.bin")
 
     with open(f"{TMP}/via_b_history_{NAME}.json", "w") as f:
         json.dump(
             {
                 "history": history,
-                "best": {
+                "best_fitness": {
+                    "fitness": round(best_fit["fitness"], 4),
+                    "kl": best_fit["kl"],
+                    "darch": best_fit["darch"],
+                    "sps": best_fit["sps"],
+                    "z": None if best_fit["z"] is None else best_fit["z"].tolist(),
+                },
+                "best_min_kl": {
                     "kl": best_kl["kl"],
                     "darch": best_kl["darch"],
                     "sps": best_kl["sps"],

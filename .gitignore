@@ -21,3 +21,8 @@ build/
 # Tooling / local
 .vscode/
 *.log
+
+# Secretos (token HF en .env) — NUNCA versionar ni pushear
+.env
+.env.*
+!.env.example
