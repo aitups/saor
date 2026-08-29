@@ -10,6 +10,7 @@ use serde::Serialize;
 
 mod consolidate;
 mod decode_bench;
+mod decode_pop;
 mod embed;
 mod evolve;
 mod kernels_run;
@@ -41,6 +42,7 @@ fn main() -> ExitCode {
         Some("embed") => embed::cmd(&args[2..]),
         Some("make-block") => make_block::cmd(&args[2..]),
         Some("decode-bench") => decode_bench::cmd(&args[2..]),
+        Some("decode-pop") => decode_pop::cmd(&args[2..]),
         Some("version") => {
             println!(
                 "saor-engine {} (domain {}, streamer {}, opencl)",
