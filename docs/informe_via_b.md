@@ -1,108 +1,146 @@
 # Informe del Proyecto: Optimización de Arquitectura Esparsa Vía B
 
-**Repositorios:** [`saor`](https://github.com/aitups/saor) (motor de optimización) · [`hayai`](https://github.com/aitups/hayai) (runtime de inferencia GGUF)
-**Fecha:** agosto 2026 · **Estado:** experimentos completados; evolución Vía B validada en 4 modelos.
+**Repositorios:** [`saor`](https://github.com/aitups/saor) (motor de optimización) ·
+[`hayai`](https://github.com/aitups/hayai) (runtime de inferencia GGUF)
+**Fecha:** agosto 2026 · **Modelos:** SmolLM2-135M, Qwen3.5-4B, ALIA-40b, Qwen3.8-27B
 
 ---
 
-## 1. Resumen ejecutivo
+## 1. Contexto y motivación (para quién llega sin antecedentes)
 
-Se cierra el pipeline **Vía B**: un único genoma CPPN (Red de Patrones de
-Composición) genera la topología de esparsidad de **todas** las capas FFN de un
-modelo (coordenada de profundidad `y_layer`), optimizado con CMA-ES bajo la
-frontera de Pareto **"maximizar compresión sujeta a KL ≤ 0.50"**. El decode de
-la topología corre en **GPU vía OpenCL** (16.5× más rápido que CPU), integrado
-en el embedder de producción.
+Los modelos de lenguaje grandes (LLM) ejecutan, en **cada token generado**, dos
+grandes bloques por capa: la **atención** y el **FFN** (red de avance, ~2/3 del
+cómputo total). El FFN es, además, el mayor depósito de parámetros del modelo.
+Una forma natural de acelerar y aligerar un LLM es **podar** (poner a cero) una
+fracción de sus conexiones FFN: si la poda se hace bien, el modelo "sigue
+hablando igual" pero hace menos operaciones por token.
 
-Resultados clave (validados con el evaluador KL del runtime):
+El reto es **dónde podar**: no todas las conexiones ni todas las capas son
+iguales. Podar de más en capas críticas degrada la calidad; podar poco en capas
+redundantes deja cómputo sobre la mesa. La pregunta de este proyecto:
 
-| Modelo | Compresión FFN (D_arch) | KL | Nota |
-|---|---|---|---|
-| SmolLM2-135M | 7.8 % | 1.68 | canario de validación |
-| Qwen3.5-4B | 2.7 % | 0.113 | híbrido gated-DeltaNet |
-| ALIA-40b | 1.8 % | 0.776 | el más sensible a la poda |
-| Qwen3.8-27B | 10.7 % (mejor fitness) | 0.394 | el más robusto (KL 0.14 a sp 0.25) |
+> **¿Puede un algoritmo descubrir automáticamente el perfil de esparsidad por
+> capa que maximiza la compresión del FFN manteniendo la calidad?**
 
-**Ranking de sensibilidad a la poda del FFN: 27B < 4B ≪ SmolLM2 < ALIA**
-(a la misma compresión, ALIA produce ~70× más KL que el 27B).
-
-> **Nota de métrica:** `D_arch` en este proyecto mide la **fracción de parámetros
-> FFN podados** (compresión), no la densidad. El nombre histórico `D_arch`
-> ("densidad de arquitectura") se conserva por compatibilidad; el objetivo D20
-> "max D_arch @ KL ≤ 0.5" es, por tanto, **maximizar la compresión sujeta a
-> calidad**.
+La respuesta propuesta — **Vía B** — es: usar un **CPPN** (una red pequeña que
+genera patrones) para definir la topología de esparsidad de *todas* las capas a
+partir de un único vector de pesos (el *genoma*), y **evolucionar ese genoma**
+con CMA-ES para optimizar la compresión sujeta a una cota de calidad (KL ≤ 0.5).
 
 ---
 
-## 2. Objetivo y método
+## 2. Conceptos clave
 
-### 2.1 Formulación (D20)
-- **Objetivo:** `max D_arch_global` sujeto a `KL_global ≤ 0.50`, con esparsidad
-  **heterogénea por capa**.
-- **CPPN global (Vía B):** un solo genoma (466 parámetros: 2 capas ocultas de 16
-  con activaciones tanh/sin) evalúa cada conexión `(i, j)` de cada capa con la
-  coordenada de profundidad `y_layer ∈ [-1, 1]`. Conexión activa si `l_ij > τ`
-  (`τ = 0.42`). El perfil por capa emerge del propio genoma (sin per-layer
-  manual).
-- **Optimizador:** CMA-ES sobre el genoma aplanado; fitness
-  `= D_arch − 2·max(0, KL − 0.5)`.
-- **Evaluador:** el modelo original y el esparso embebido se ejecutan en
-  lockstep con el runtime `hayai` (StreamingGenerator); KL de logits por
-  posición y `D_arch` medido por popcount de la adyacencia embebida.
+### 2.1 KL (Kullback–Leibler) — la medida de "indistinguibilidad"
+Al generar, un modelo produce una distribución de probabilidad sobre el
+siguiente token. La **KL** mide la distancia entre la distribución del modelo
+**original** y la del modelo **podado**:
 
-### 2.2 Pipeline de producción
+- `KL = 0` → distribuciones idénticas → el modelo podado es *indistinguible*
+  del original en sus predicciones.
+- `KL` pequeña → predicciones casi iguales (el podado puede escoger un token
+  distinto ocasionalmente).
+- `KL` grande → el podado "habla distinto" (degradado).
+
+En este proyecto la KL se mide comparando los logits de ambos modelos sobre un
+corpus de calibración, posición a posición (teacher-forcing). El **contrato de
+calidad** es `KL ≤ 0.50`.
+
+### 2.2 D_arch — la medida de compresión
+`D_arch` es la **fracción de parámetros del FFN podados** (puestos a cero). Un
+`D_arch = 0.10` significa que el 10% de las conexiones FFN se han eliminado.
+(El nombre histórico "D_arch" viene de "densidad de arquitectura"; aquí se usa
+como *compresión*: `D_arch = 1 − fracción activa`.)
+
+### 2.3 Compresión de cómputo y de tamaño (aclaración importante)
+- **Cómputo (FLOPs):** podar el X% del FFN reduce las multiplicaciones del FFN
+  en X%. Como el FFN es ~60-70% del cómputo total, el ahorro global de FLOPs es
+  `D_arch × fracción_FFN` (ver §5).
+- **Tamaño de archivo:** en este proyecto el modelo podado se guarda con los
+  pesos activos en **F32** (formato D16 de saor) frente al Q4_K_M original.
+  Por tanto el **archivo no se reduce** (incluso crece). La reducción es de
+  **cómputo/parámetros**, no de bytes en disco.
+- **Latencia (velocidad real):** no se ha medido en este proyecto. La reducción
+  de FLOPs es un límite superior del ahorro teórico; el SpMM disperso añade
+  overhead. (Se documenta como limitación, §6.3.)
+
+### 2.4 CPPN y CMA-ES
+- **CPPN (Red de Patrones de Composición):** una red neuronal pequeña (466
+  parámetros: 16+16 neuronas ocultas) que, evaluada en las coordenadas de cada
+  conexión `(i, j)` y de cada capa (`y_layer ∈ [-1,1]`), devuelve `(peso,
+  probabilidad_de_activa)`. Conexión activa si `l_ij > τ` (`τ = 0.42`). Un solo
+  genoma define así el perfil de TODAS las capas (Vía B).
+- **CMA-ES:** algoritmo de evolución de estrategias de covarianza que ajusta el
+  genoma para maximizar `fitness = D_arch − 2·max(0, KL − 0.5)`.
+
+---
+
+## 3. Método y condiciones del experimento
+
+### 3.1 Pipeline
 ```
-CPPN (genoma) → embed_sparse --genome [--gpu] → GGUF D16 esparso → kl_eval → CMA-ES
+genoma CPPN → embed_sparse --genome [--gpu] → GGUF esparso D16 → kl_eval → CMA-ES
 ```
-- `dump_weights` extrae los pesos F32 del gate por capa (una vez).
-- `embed_sparse --genome` decodifica la topología por capa (CPU Rust o **kernel
-  OpenCL `cppn_decode_adj`** en GPU) y conserva los pesos del profesor en las
-  posiciones activas (warm-start teacher-copy), escribiendo el GGUF en
-  streaming (sin cargar el modelo completo en RAM).
-- `kl_eval` mide KL y D_arch sobre el modelo embebido.
+1. `dump_weights` extrae los pesos F32 del gate de cada capa (una vez).
+2. `embed_sparse --genome` decodifica la topología por capa y conserva los pesos
+   del profesor en las posiciones activas (**warm-start teacher-copy**), en
+   streaming (sin cargar el modelo en RAM).
+3. `kl_eval` mide KL y D_arch sobre el modelo embebido.
+4. CMA-ES actualiza el genoma.
 
-### 2.3 Kernel OpenCL
-El decode CPPN (un work-item por conexión, `atomic_or` para la adyacencia)
-está integrado en `embed_sparse --gpu`:
-- **Rendimiento:** 2 s vs 33 s en SmolLM2 (16.5×); escala a ALIA-40b (201M
-  conexiones × 48 capas ≈ 9.6G evaluaciones) vía dispatches fragmentados
-  (WDDM/TDR).
-- **Validación:** bit-exacto frente a `instantiate_layer` (capa 7/30, patrón
-  mixto, `adj_bytes_diff_layer = 0`).
-- **Linkeo dinámico** (cl3 `dynamic`): los binarios cargan `OpenCL.dll` en
-  runtime, sin requerir el SDK en tiempo de compilación.
+El decode de la topología corre en **GPU vía kernel OpenCL** (`cppn_decode_adj`,
+un work-item por conexión): 2 s vs 33 s en CPU (16.5×), validado bit-exacto
+frente a la referencia Rust, y escalable a modelos de 40B (201M conexiones × 48
+capas ≈ 9.6G evaluaciones) con dispatches fragmentados (WDDM/TDR).
+
+### 3.2 Condiciones fijas
+| Condición | Valor |
+|---|---|
+| Umbral de activación `τ` | 0.42 |
+| Generaciones CMA-ES | 4 (22 candidatos/gen, población 22) |
+| Semilla | 7 |
+| Esparsidad | solo el **gate** del FFN (up/down densos), salvo SmolLM2 (3 bloques) |
+| Calibración | 128 prompts, `n_pos` 4–24 |
+| Contrato | `KL ≤ 0.50`; objetivo `max D_arch @ KL ≤ 0.5` |
+| Hardware | RTX 4050 (6 GB), decode OpenCL GPU, kl_eval secuencial |
+
+> Regla operacional: **un solo proceso OpenCL a la vez** — dos `kl_eval`
+> concurrentes sobre la misma GPU se deadlockean (hallazgo D34).
 
 ---
 
-## 3. Resultados por modelo
+## 4. Resultados
 
-### 3.1 Frontera uniforme (baseline de poda por magnitud del gate)
+### 4.1 Frontera uniforme (baseline: poda por magnitud del gate)
+
+Primero se midió la curva KL vs compresión con una poda **uniforme** (la misma
+fracción en todas las capas) para conocer la tolerancia de cada modelo:
 
 | Modelo | sp 0.05 | sp 0.10 | sp 0.15 | sp 0.20 | sp 0.25 |
 |---|---|---|---|---|---|
-| **Qwen3.5-4B** | 0.045 / 0.017 | 0.108 / 0.033 | 0.173 / 0.050 | 0.296 / 0.067 | 0.463 / 0.083 |
-| **ALIA-40b** | — | 0.958 / 0.033 | — | 2.151 / 0.067 | — |
-| **Qwen3.8-27B** | 0.015 / 0.017 | 0.042 / 0.033 | 0.075 / 0.050 | 0.115 / 0.067 | 0.143 / 0.083 |
+| **Qwen3.5-4B** | 0.045 | 0.108 | 0.173 | 0.296 | 0.463 |
+| **ALIA-40b** | — | 0.958 | — | 2.151 | — |
+| **Qwen3.8-27B** | 0.015 | 0.042 | 0.075 | 0.115 | 0.143 |
 
-*(formato: `KL / D_arch`; D_arch = fracción del FFN podada, incluye los 3
-bloques; sp es la esparsidad del gate)*
+*(valores = KL; `sp` = fracción podada del gate; D_arch ≈ sp/3 porque el gate
+es 1/3 del FFN y up/down quedan densos)*
 
-Lecturas:
-- **Qwen3.8-27B es excepcionalmente robusto**: sp 0.25 (8.3 % de FFN podado)
-  con KL 0.143.
-- **ALIA-40b explota**: sp 0.2 → KL 2.15; su perfil (capas tempranas críticas)
-  hace la poda uniforme inviable.
+**Lectura:** la tolerancia varía ~70× entre modelos. Qwen3.8-27B aguanta sp
+0.25 con KL 0.14; ALIA-40b explota (KL 2.15 a sp 0.2).
 
-### 3.2 Evolución Vía B (genomas validados)
+### 4.2 Evolución Vía B (genomas finales, validados)
 
-| Modelo | Genoma | Compresión (D_arch) | KL | n_pos | Validación |
-|---|---|---|---|---|---|
-| SmolLM2-135M | `via_b_best_genome.bin` | 7.8 % | 1.68 | 24 | CPU==GPU (Δ 1e-4) |
-| Qwen3.5-4B | `via_b_best_genome_qwen35.bin` | 2.7 % | 0.113 | 24 | GPU |
-| ALIA-40b | `via_b_best_genome_alia.bin` | 1.8 % | 0.776 | 8 | GPU |
-| Qwen3.8-27B | `via_b_best_genome_qwen27.bin` | 10.7 % (best-fit) / 0.4 % (min-KL) | 0.394 / 0.0005 | 4 / 8 | GPU |
+| Modelo | Compresión FFN (D_arch) | Ahorro FLOPs total* | KL | Validación |
+|---|---|---|---|---|
+| SmolLM2-135M | 7.8 % | ~4.6 % | 1.68 | n_pos 24, CPU==GPU |
+| Qwen3.5-4B | 6.4 % | ~3.7 % | 0.379 | n_pos 8 |
+| ALIA-40b | 1.8 % | ~1.3 % | 0.776 | n_pos 8 |
+| Qwen3.8-27B | 10.7 % | ~6.8 % | 0.394 | n_pos 4 |
 
-Perfiles de densidad por capa (gate, subsample):
+*`D_arch × fracción del cómputo que es FFN` (~0.6-0.7 según modelo). El 27B
+además alcanzó un punto casi sin pérdida: KL 0.0005 a 0.4 % de compresión.
+
+**Perfiles de densidad por capa** (gate, subsample; % de conexiones activas):
 
 ```
 SmolLM2:    95 95 95 95 96 96 ... 85 85 86 86 86 87   (media 92 %)
@@ -111,49 +149,92 @@ ALIA-40b:   99 99 98 98 97 97 ... 95 95 95 95 95 95   (media 95 %)
 Qwen3.8-27B:91 92 93 94 94 95 ... 100 100 100 100 100 (media 99 %)
 ```
 
-La optimización concentra la poda en las capas donde el modelo es tolerante y
-mantiene densas las críticas (para Qwen, las capas finales; para SmolLM2, las
-iniciales).
+La evolución concentra la poda donde el modelo es tolerante (capas iniciales de
+Qwen, intermedias de SmolLM2) y mantiene densas las críticas (capas finales).
 
-### 3.3 Comparación Vía B vs. baseline uniforme
+### 4.3 Vía B vs baseline uniforme
 
-- **Qwen3.8-27B:** la evolución alcanza **10.7 % de compresión con KL 0.394**
-  (ambos bajo el target 0.5), superando el punto uniforme más lejano medido
-  (sp 0.25 → 8.3 % / KL 0.143). En el marco D20 (max compresión @ KL≤0.5), la
-  evolución encuentra un punto de mayor compresión.
-- **ALIA-40b:** la compresión alcanzable es baja (1.8 % con KL 0.776, aún sobre
-  el target) — la sensibilidad estructural de ALIA limita la poda.
-- **SmolLM2:** KL 1.68 a 7.8 % de compresión; el baseline uniforme a sp 0.1
-  (3.3 %) da KL 0.754. La evolución no superó al baseline en este canario con
-  4 generaciones (el paisaje CPPN requiere más generaciones o mejor
-  exploración).
+- **Qwen3.8-27B:** la evolución logra **10.7 % de compresión con KL 0.394**,
+  superando el punto uniforme más lejano medido (sp 0.25 → 8.3 % / KL 0.143).
+  En el marco del objetivo (max compresión @ KL≤0.5) la evolución gana.
+- **SmolLM2 / ALIA:** la evolución no supera al baseline uniforme a igual
+  compresión en el presupuesto usado (4 gens); la topología CPPN añade
+  expresividad pero requiere más exploración (ver §6).
 
 ---
 
-## 4. Hallazgos de ingeniería
+## 5. ¿Qué consigue el modelo podado frente al original?
 
-1. **Kernel OpenCL integrado** (`embed_sparse --gpu`): 16.5× más rápido,
-   bit-exacto, escala a modelos de 40B (vía dispatches fragmentados).
-2. **Linkeo dinámico OpenCL** (cl3 `dynamic`): los binarios compilan sin el SDK
-   (solo el runtime del driver).
-3. **Deadlock de GPU concurrente:** dos procesos OpenCL simultáneos sobre la
-   misma GPU se cuelgan (pool). Regla operacional: **un solo proceso OpenCL a
-   la vez**.
-4. **Fallos "OOM" de ALIA:** los errores históricos
-   (`CL_MEM_OBJECT_ALLOCATION_FAILURE` / `UnexpectedEof`) eran **GGUF parciales**
-   por carreras entre embeds concurrentes sobre los mismos `wdata.*`, no bugs
-   del runtime. Con archivos completos el kl_eval del 40B corre en la RTX 4050.
-5. **Embedding streaming:** reescritura GGUF sin cargar el modelo en RAM
-   (crítico para 23–57 GB).
-6. **Selección del mejor genoma (fix):** el script ahora guarda el genoma de
-   **mejor fitness** (objetivo D20) además del de mínima KL.
+### 5.1 ¿Es más ligero?
+**En cómputo, sí (modestamente).** Podar el X% del FFN elimina ese X% de las
+multiplicaciones del FFN. El ahorro total de FLOPs por token:
+
+| Modelo | Compresión FFN | Ahorro FLOPs estimado | Params FFN eliminados |
+|---|---|---|---|
+| SmolLM2-135M | 7.8 % | ~4.6 % | ~6 M de 135 M |
+| Qwen3.5-4B | 6.4 % | ~3.7 % | ~150 M de 4 B |
+| ALIA-40b | 1.8 % | ~1.3 % | ~520 M de 40 B |
+| Qwen3.8-27B | 10.7 % | ~6.8 % | ~1.9 B de 27 B |
+
+**En tamaño de archivo, no.** El formato D16 guarda los pesos activos en F32
+(frente al Q4_K_M original), así que el `.gguf` resultante es mayor. Un futuro
+re-cuantizado (Q4_K_M sobre los pesos activos) reduciría el archivo.
+
+### 5.2 ¿Es más rápido?
+**No medido.** La reducción de FLOPs es un límite teórico; el SpMM disperso en
+GPU tiene overhead y el cuello de botella real (memoria/banda) no se ha
+benchmarked en este proyecto. Es una limitación declarada (§6.3).
+
+### 5.3 ¿Es indistinguible?
+**Depende del umbral KL.** Con `KL ≤ 0.5` (el contrato) el modelo podado elige
+el mismo token que el original en la gran mayoría de posiciones. Los puntos
+reportados:
+
+- Qwen3.5-4B y Qwen3.8-27B cumplen el contrato (KL 0.38-0.39).
+- SmolLM2 (KL 1.68) y ALIA (KL 0.78) **no** lo cumplen a su compresión actual:
+  para estos modelos la compresión con calidad es menor o la evolución no
+  encontró aún el punto.
+
+### 5.4 ¿Qué se paga?
+La compensación clásica compresión ↔ calidad: a más `D_arch`, más KL. La
+frontera uniforme (§4.1) cuantifica esa compensación por modelo.
 
 ---
 
-## 5. Reproducibilidad
+## 6. ¿Se consiguió? Evaluación del experimento
 
-Requisitos: Rust (workspace `saor` + `hayai`), GPU OpenCL (opcional, para
-`--gpu`), Python 3.12 con `numpy`.
+### 6.1 Qué se logró
+1. **Pipeline Vía B cerrado y reproducible** en 4 modelos (135M–40B): CPPN
+   global → decode OpenCL en GPU → embedding D16 → evaluación KL → CMA-ES.
+2. **Kernel OpenCL integrado** (16.5× más rápido, bit-exacto, linkeo dinámico
+   sin SDK).
+3. **Ranking de sensibilidad a la poda** de 4 familias de modelos.
+4. **Genomas publicables** (466 floats/modelo) + GGUF D16 embebidos.
+
+### 6.2 En qué medida (y con qué condiciones)
+- **Compresión con calidad (KL ≤ 0.5): 2-11 % del FFN** (≈1-7 % de FLOPs
+  totales) en los modelos probados, con `τ=0.42`, 4 generaciones CMA-ES, seed
+  7, poda del gate. El FFN de los LLM modernos es **menos redundante de lo
+  esperado** para la poda no estructurada.
+- **Vía B no supera de forma consistente a la poda uniforme por magnitud** con
+  este presupuesto: solo el 27B mejora el punto uniforme conocido. El valor
+  demostrado es la **automatización del perfil** (sin etiquetado manual por
+  capa) y el **pipeline GPU**.
+
+### 6.3 Limitaciones
+- **Latencia no medida** (solo FLOPs teóricos).
+- **Formato F32** en el embed (archivo mayor).
+- **4 generaciones** — presupuesto corto para un paisaje 466-D.
+- **Calibración limitada** (128 prompts, n_pos 4-24).
+- **Poda del gate únicamente** (no se podan up/down ni atención en los modelos
+  grandes).
+
+---
+
+## 7. Reproducibilidad
+
+Requisitos: Rust (workspace `saor` + `hayai`), GPU OpenCL (opcional, `--gpu`),
+Python 3.12 + `numpy`.
 
 ```bash
 # 1) Dump del gate (una vez por modelo)
@@ -175,24 +256,25 @@ hayai kl_eval --orig <model.gguf> --sparse best.gguf --prompts calib.txt \
   --n-positions 24 --device auto
 ```
 
-Los GGUF embebidos (formato D16 de saor) se ejecutan con el `StreamingGenerator`
-de `hayai` (incluye el FFN disperso SpMM-CSR en OpenCL).
+Los GGUF embebidos (formato D16) se ejecutan con el `StreamingGenerator` de
+`hayai` (FFN disperso vía SpMM-CSR en OpenCL).
 
 ---
 
-## 6. Conclusiones
+## 8. Conclusiones
 
-1. **El pipeline Vía B está cerrado y reproducible** en 4 modelos (135M–40B),
-   con decode por GPU y validación end-to-end.
-2. **La robustez a la poda es específica del modelo**: Qwen3.8-27B y Qwen3.5-4B
-   (híbridos gated-DeltaNet) toleran compresión con KL bajo; ALIA-40b es
-   estructuralmente sensible.
-3. **La compresión alcanzable con calidad (KL ≤ 0.5) es modesta** (2–11 % del
-   FFN) en estos modelos — el FFN de los LLM modernos es menos redundante de lo
-   esperado para la poda no estructurada del gate.
-4. **La topología CPPN (Vía B) automatiza el perfil por capa** pero no supera de
-   forma consistente a la poda uniforme por magnitud en el presupuesto de
-   generaciones usado (4 gens). El valor está en el descubrimiento automático
-   del perfil y en el pipeline GPU.
-5. **Publicaciones:** genomas CPPN (466 floats/modelo), GGUF D16 embebidos y
-   este informe en Hugging Face; código en GitHub (`aitups/saor`, `aitups/hayai`).
+1. **El experimento responde a su pregunta central:** es posible automatizar el
+   descubrimiento del perfil de esparsidad por capa con un CPPN evolucionado,
+   de forma reproducible y con decode en GPU.
+2. **El beneficio cuantitativo es modesto en estos modelos:** 2-11 % de
+   compresión del FFN (1-7 % de FLOPs) con calidad acotada por KL ≤ 0.5. La
+   poda no estructurada del gate no es una palanca de compresión fuerte en los
+   LLM modernos.
+3. **El ranking de sensibilidad (27B < 4B ≪ SmolLM2 < ALIA)** es el resultado
+   más transferible: guía dónde tiene sentido la poda (híbridos gated-DeltaNet
+   vs. arquitecturas densas sensibles como ALIA).
+4. **La topología CPPN automatiza el perfil** pero no supera al baseline
+   uniforme de forma consistente con 4 generaciones; el pipeline GPU y la
+   publicación de genomas permiten escalar la búsqueda.
+5. **Código, genomas y modelos publicados** en GitHub (`aitups/saor`,
+   `aitups/hayai`) y Hugging Face (colección `saor-via-b`).
