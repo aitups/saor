@@ -257,16 +257,18 @@ fn main() -> Result<(), String> {
                     }
                 }
             }
-            // Los pesos F32 se escriben a fichero (streaming): para ALIA-40b
-            // (201M activos × 48 capas ≈ 35 GB) no caben en RAM.
+            // Los pesos activos se cuantizan a **Q4_K** y se escriben a fichero
+            // (streaming): para ALIA-40b no caben en RAM y el Q4_K reduce el
+            // archivo y la banda de memoria frente al F32 (el dequant lo hace
+            // `hayai` al leer el bloque disperso). Se rellena a múltiplo de 256.
             let wfile = weights_dir.join(format!("wdata.{layer}.{block}.bin"));
-            let mut wbuf = Vec::with_capacity(weights.len() * 4);
-            for x in &weights {
-                wbuf.extend_from_slice(&x.to_le_bytes());
-            }
-            std::fs::write(&wfile, &wbuf)
-                .map_err(|e| format!("escribir pesos {wfile:?}: {e}"))?;
-            drop(wbuf);
+            let pad = (256 - weights.len() % 256) % 256;
+            let mut padded = weights;
+            padded.resize(padded.len() + pad, 0.0);
+            let q4 = saor_streamer::q4k::quantize_q4_k(&padded, padded.len())?;
+            std::fs::write(&wfile, &q4)
+                .map_err(|e| format!("escribir pesos q4 {wfile:?}: {e}"))?;
+            drop(q4);
             replacements.push(BlockReplacement {
                 tensor: format!("blk.{layer}.{block}.weight"),
                 block: SparseBlock {
@@ -278,6 +280,7 @@ fn main() -> Result<(), String> {
                     weights: Vec::new(),
                 },
                 weights_file: Some(wfile),
+                weights_q4: true,
             });
         }
     }

@@ -16,6 +16,7 @@
 pub mod gguf_embed;
 pub mod gguf_sparse;
 pub mod pinned;
+pub mod q4k;
 pub mod quant;
 pub mod streamer;
 

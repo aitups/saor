@@ -17,10 +17,17 @@ hablando igual" pero hace menos operaciones por token.
 
 El reto es **dónde podar**: no todas las conexiones ni todas las capas son
 iguales. Podar de más en capas críticas degrada la calidad; podar poco en capas
-redundantes deja cómputo sobre la mesa. La pregunta de este proyecto:
+redundantes deja cómputo sobre la mesa. La pregunta central de este proyecto:
 
-> **¿Puede un algoritmo descubrir automáticamente el perfil de esparsidad por
-> capa que maximiza la compresión del FFN manteniendo la calidad?**
+> **¿Se puede optimizar la arquitectura de un LLM?**
+
+Es decir: ¿puede un algoritmo **rediseñar la estructura interna** de un modelo
+(qué conexiones existen, con qué densidad por capa) de forma automática, sin
+etiquetado manual, para obtener un modelo más ligero que **siga hablando
+igual**? La sub-pregunta operativa que se responde aquí: ¿se puede descubrir
+automáticamente el **perfil de esparsidad por capa** (una decisión de
+arquitectura) que maximiza la compresión del FFN manteniendo la calidad
+(KL ≤ 0.5)?
 
 La respuesta propuesta — **Vía B** — es: usar un **CPPN** (una red pequeña que
 genera patrones) para definir la topología de esparsidad de *todas* las capas a
@@ -56,13 +63,12 @@ como *compresión*: `D_arch = 1 − fracción activa`.)
 - **Cómputo (FLOPs):** podar el X% del FFN reduce las multiplicaciones del FFN
   en X%. Como el FFN es ~60-70% del cómputo total, el ahorro global de FLOPs es
   `D_arch × fracción_FFN` (ver §5).
-- **Tamaño de archivo:** en este proyecto el modelo podado se guarda con los
-  pesos activos en **F32** (formato D16 de saor) frente al Q4_K_M original.
-  Por tanto el **archivo no se reduce** (incluso crece). La reducción es de
-  **cómputo/parámetros**, no de bytes en disco.
-- **Latencia (velocidad real):** no se ha medido en este proyecto. La reducción
-  de FLOPs es un límite superior del ahorro teórico; el SpMM disperso añade
-  overhead. (Se documenta como limitación, §6.3.)
+- **Tamaño de archivo:** los pesos activos se exportan **cuantizados a Q4_K**
+  (formato D16 de saor). El GGUF esparso resultante es **menor que el
+  original**: SmolLM2 → 102 MB frente a 110 MB del Q4_K_M (354 MB si se
+  exportara en F32).
+- **Latencia (velocidad real):** ver §5.2 — medida en CPU; en GPU (path de
+  producción) queda pendiente por la regla de un solo proceso OpenCL.
 
 ### 2.4 CPPN y CMA-ES
 - **CPPN (Red de Patrones de Composición):** una red neuronal pequeña (466
@@ -176,14 +182,30 @@ multiplicaciones del FFN. El ahorro total de FLOPs por token:
 | ALIA-40b | 1.8 % | ~1.3 % | ~520 M de 40 B |
 | Qwen3.8-27B | 10.7 % | ~6.8 % | ~1.9 B de 27 B |
 
-**En tamaño de archivo, no.** El formato D16 guarda los pesos activos en F32
-(frente al Q4_K_M original), así que el `.gguf` resultante es mayor. Un futuro
-re-cuantizado (Q4_K_M sobre los pesos activos) reduciría el archivo.
+**En tamaño de archivo, ahora sí.** Los pesos activos se exportan en **Q4_K**:
+el GGUF esparso de SmolLM2 pesa **102 MB** frente a los 110 MB del Q4_K_M
+original (y 354 MB si se exportaran en F32). Para Qwen/ALIA/27B el ahorro es
+proporcional (Q4_K ≈ 1/8 del F32 en los bloques esparsos).
 
 ### 5.2 ¿Es más rápido?
-**No medido.** La reducción de FLOPs es un límite teórico; el SpMM disperso en
-GPU tiene overhead y el cuello de botella real (memoria/banda) no se ha
-benchmarked en este proyecto. Es una limitación declarada (§6.3).
+**Medido en CPU (SmolLM2, 32 tokens, `bench_speed`):**
+
+| Modelo | MemoryStrategy | tokens/s | ms/token |
+|---|---|---|---|
+| Original (Q4_K_M) | Minimal | 3.64 | 275 |
+| Original (Q4_K_M) | AutoFit | 17.82 | 56 |
+| Esparso F32 (D16) | Minimal | 0.61 | 1645 |
+| Esparso F32 (D16) | AutoFit | 0.49 | 2030 |
+| Esparso Q4_K (D16) | Minimal | 0.50 | 1982 |
+| Esparso Q4_K (D16) | AutoFit | 0.54 | 1839 |
+
+**Lectura honesta:** en CPU el modelo esparso es **más lento** (el overhead del
+SpMM-CSR y del runtime de streaming dominan a la reducción de FLOPs del 5 %;
+el Q4 no cambia la velocidad en CPU porque el cuello de botella no es la
+banda). El path de **GPU** (SpMM-CSR en OpenCL, D29) es el de producción pero
+**no se ha medido** aquí (regla de un solo proceso OpenCL; el re-run de
+Qwen3.8-27B ocupa la GPU). El comando queda listo:
+`bench_speed --model <esparso.gguf> --device auto`.
 
 ### 5.3 ¿Es indistinguible?
 **Depende del umbral KL.** Con `KL ≤ 0.5` (el contrato) el modelo podado elige
@@ -223,7 +245,8 @@ frontera uniforme (§4.1) cuantifica esa compensación por modelo.
 
 ### 6.3 Limitaciones
 - **Latencia no medida** (solo FLOPs teóricos).
-- **Formato F32** en el embed (archivo mayor).
+- **Velocidad en GPU sin medir** (solo CPU en este informe); el Q4 ya reduce
+  el archivo pero la latencia real del SpMM-GPU queda pendiente.
 - **4 generaciones** — presupuesto corto para un paisaje 466-D.
 - **Calibración limitada** (128 prompts, n_pos 4-24).
 - **Poda del gate únicamente** (no se podan up/down ni atención en los modelos
@@ -263,9 +286,11 @@ Los GGUF embebidos (formato D16) se ejecutan con el `StreamingGenerator` de
 
 ## 8. Conclusiones
 
-1. **El experimento responde a su pregunta central:** es posible automatizar el
-   descubrimiento del perfil de esparsidad por capa con un CPPN evolucionado,
-   de forma reproducible y con decode en GPU.
+1. **La pregunta central («¿se puede optimizar la arquitectura de un LLM?»)
+   se responde parcialmente:** sí es posible **automatizar una decisión de
+   arquitectura** (el perfil de esparsidad por capa) con un CPPN evolucionado,
+   de forma reproducible y con decode en GPU; el beneficio cuantitativo en
+   estos 4 modelos es modesto (ver punto 2).
 2. **El beneficio cuantitativo es modesto en estos modelos:** 2-11 % de
    compresión del FFN (1-7 % de FLOPs) con calidad acotada por KL ≤ 0.5. La
    poda no estructurada del gate no es una palanca de compresión fuerte en los

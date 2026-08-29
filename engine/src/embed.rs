@@ -88,6 +88,7 @@ pub fn cmd(args: &[String]) -> ExitCode {
             tensor: tensor.clone(),
             block,
             weights_file: None,
+            weights_q4: false,
         });
     }
 

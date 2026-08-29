@@ -26,6 +26,8 @@ pub const WEIGHTS_TENSOR_NAME: &str = "ffn_dag_weights";
 
 /// Tipo GGML F32.
 pub const GGML_TYPE_F32: i32 = 0;
+/// Tipo GGML Q4_K (pesos activos cuantizados; 256 elementos por bloque de 144 bytes).
+pub const GGML_TYPE_Q4_K: i32 = 12;
 /// Tipo GGML I8 (bytes de adyacencia). El estándar GGML asigna 24 a `I8`
 /// (16 = `IQ2_XXS`); corregido para interop con el parser de `hayai`
 /// (pr_soporte_gguf_disperso_v3.md, reconciliación R1).

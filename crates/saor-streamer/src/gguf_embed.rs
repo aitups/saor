@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::gguf_sparse::{SparseBlock, GGML_TYPE_F32, GGML_TYPE_I8};
+use crate::gguf_sparse::{SparseBlock, GGML_TYPE_F32, GGML_TYPE_I8, GGML_TYPE_Q4_K};
 
 /// Magic del formato GGUF ("GGUF").
 pub const GGUF_MAGIC: u32 = 0x4655_4747;
@@ -274,6 +274,9 @@ pub struct BlockReplacement {
     /// Ruta a un fichero con los pesos F32 del bloque (streaming): para bloques
     /// grandes evita retener los pesos en RAM (ALIA 40B: ~35 GB en RAM).
     pub weights_file: Option<std::path::PathBuf>,
+    /// `true` si el fichero de pesos está cuantizado a **Q4_K** (144 bytes/256
+    /// elementos) en lugar de F32. El tensor `ffn_dag_weights` se declara Q4_K.
+    pub weights_q4: bool,
 }
 
 /// Reporte de la reescritura.
@@ -408,12 +411,19 @@ pub fn rewrite_embedded(
         });
         out.push(OutTensor {
             name: format!("{bn}{WEIGHTS_SUFFIX}"),
-            dims: vec![if r.weights_file.is_some() {
+            dims: vec![if r.weights_q4 {
+                // Q4_K: el fichero son bloques de 144 bytes de 256 elementos.
+                wnbytes / crate::q4k::Q4_K_BLOCK_BYTES as u64 * crate::q4k::QK_K as u64
+            } else if r.weights_file.is_some() {
                 wnbytes / 4
             } else {
                 block.weights.len() as u64
             }],
-            ggml_type: GGML_TYPE_F32,
+            ggml_type: if r.weights_q4 {
+                GGML_TYPE_Q4_K
+            } else {
+                GGML_TYPE_F32
+            },
             nbytes: wnbytes,
             offset: 0,
             src_abs: None,
@@ -828,6 +838,7 @@ mod tests {
                 tensor: "blk.0.ffn_gate.weight".into(),
                 block: block.clone(),
                 weights_file: None,
+                weights_q4: false,
             }],
         )
         .expect("rewrite");
