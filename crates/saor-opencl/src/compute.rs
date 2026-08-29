@@ -169,6 +169,43 @@ impl ClEngine {
         Ok(())
     }
 
+    /// Envía un kernel 2D fragmentado por FILAS (mitigación WDDM/TDR): la columna
+    /// `cols` (= nº de candidatos de la población) permanece completa en cada
+    /// dispatch; las filas se trocean encadenadas por eventos.
+    fn enqueue_chunked_2d(
+        &self,
+        kernel: &Kernel,
+        rows: usize,
+        cols: usize,
+        chunk: usize,
+    ) -> Result<(), String> {
+        let mut events: Vec<opencl3::event::Event> = Vec::new();
+        let mut wait: Vec<cl_event> = Vec::new();
+        let mut offset = 0usize;
+        while offset < rows {
+            let size = chunk.min(rows - offset);
+            let off_arr = [offset, 0usize];
+            let size_arr = [size, cols];
+            let event = unsafe {
+                self.queue.enqueue_nd_range_kernel(
+                    kernel.get(),
+                    2,
+                    off_arr.as_ptr(),
+                    size_arr.as_ptr(),
+                    ptr::null(),
+                    &wait,
+                )
+            }
+            .map_err(|e| format!("enqueue_nd_range_kernel 2d: {e}"))?;
+            wait = vec![event.get()];
+            events.push(event);
+            offset += size;
+        }
+        drop(wait);
+        self.queue.finish().map_err(|e| format!("finish: {e}"))?;
+        Ok(())
+    }
+
     /// Ejecuta el decodificador CPPN para `d_in x d_out`.
     ///
     /// Devuelve `(w_dense, adjacency, active)` donde `w_dense` es la matriz
@@ -262,6 +299,64 @@ impl ClEngine {
         let a_out = self.read(&a, n_bytes)?;
         let act_out = self.read(&act, 1)?;
         Ok((a_out, act_out[0]))
+    }
+
+    /// Decodifica **solo la adyacencia** de **N candidatos** en un único dispatch
+    /// (Vía B — tensorización de la población). `genomes` debe tener `N * 466` f32
+    /// (el genoma CPPN real; `CppnGenome::param_count()`). Rejilla 2D
+    /// `[conexiones, N]`; el layout de salida es `[N][n_bytes]` (adyacencia por
+    /// candidato) + `active[cand]`. Bit-exacto frente a N llamadas a
+    /// [`Self::cppn_decode_adjacency`] (puerta de aceptación Fase 1).
+    pub fn cppn_decode_adjacency_batched(
+        &self,
+        genomes: &[f32],          // N * 466
+        n_candidates: usize,
+        d_in: usize,
+        d_out: usize,
+        tau: f32,
+        layer: usize,
+        n_layers: usize,
+    ) -> Result<(Vec<u8>, Vec<u32>), String> {
+        let genome_len = 466usize;
+        if genomes.len() != n_candidates * genome_len {
+            return Err(format!(
+                "cppn_decode_adjacency_batched: esperaba {n_candidates}×466 f32, hay {}",
+                genomes.len()
+            ));
+        }
+        let total = d_in * d_out;
+        let n_words = total.div_ceil(32);
+        let n_bytes = total.div_ceil(8);
+        let mut g = self.buffer::<f32>(genomes.len())?;
+        let mut a_words = self.buffer::<u32>(n_words * n_candidates)?;
+        let mut act = self.buffer::<u32>(n_candidates)?;
+        self.write(&mut g, genomes)?;
+        self.write(&mut act, &vec![0u32; n_candidates])?;
+        self.write(&mut a_words, &vec![0u32; n_words * n_candidates])?;
+
+        let kernel = self.kernel(0, "cppn_decode_adj_batched")?;
+        self.set_arg(&kernel, 0, &g)?;
+        self.set_arg(&kernel, 1, &(d_in as i32))?;
+        self.set_arg(&kernel, 2, &(d_out as i32))?;
+        self.set_arg(&kernel, 3, &tau)?;
+        self.set_arg(&kernel, 4, &(layer as i32))?;
+        self.set_arg(&kernel, 5, &(n_layers as i32))?;
+        self.set_arg(&kernel, 6, &(n_candidates as i32))?;
+        self.set_arg(&kernel, 7, &a_words)?;
+        self.set_arg(&kernel, 8, &act)?;
+        self.enqueue_chunked_2d(&kernel, total, n_candidates, CPPN_DECODE_CHUNK)?;
+
+        let mut a = self.buffer::<u8>(n_bytes * n_candidates)?;
+        let pack = self.kernel(0, "pack_adjacency_batched")?;
+        self.set_arg(&pack, 0, &a_words)?;
+        self.set_arg(&pack, 1, &(n_words as i32))?;
+        self.set_arg(&pack, 2, &(n_candidates as i32))?;
+        self.set_arg(&pack, 3, &a)?;
+        self.enqueue_chunked_2d(&pack, n_words, n_candidates, CPPN_DECODE_CHUNK)?;
+
+        let a_out = self.read(&a, n_bytes * n_candidates)?;
+        let act_out = self.read(&act, n_candidates)?;
+        Ok((a_out, act_out))
     }
 
     /// SpMM del DAG en modo teacher-copy: construye el CSR **en GPU** desde la
