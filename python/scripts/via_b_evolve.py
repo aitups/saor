@@ -91,6 +91,7 @@ def decode_sparsities(z: np.ndarray, rho: float, step: int = 4) -> list[float]:
 EMBED = Path(r"d:\Documents\pySrc\saor\target\release\embed_sparse.exe")
 KL_EVAL = Path(r"d:\Documents\pySrc\hayai\target\release\examples\kl_eval.exe")
 DUMP_WEIGHTS = Path(r"d:\Documents\pySrc\hayai\target\release\examples\dump_weights.exe")
+DECODE_POP = Path(r"d:\Documents\pySrc\saor\target\release\saor-engine.exe")
 W_DIR = Path(r"d:\Documents\pySrc\.scratch\w_frontier")  # dump de pesos (una vez)
 
 
@@ -125,7 +126,8 @@ def evaluate(
         )
         out = sh(
             f"{KL_EVAL} --orig {MODEL} --sparse {emb} --prompts {PROMPTS} "
-            f"--n-positions {n_pos} --device {KL_DEVICE}"
+            f"--n-positions {n_pos} --device {KL_DEVICE} "
+            f"--teacher-cache {TMP}/vib_teacher_{NAME}.bin"
         )
         os.remove(emb)
     else:
@@ -137,6 +139,48 @@ def evaluate(
             f"--tau {tau:.4f} --n-positions {n_pos} --device cpu"
         )
     return json.loads(out.strip())
+
+
+def evaluate_population(
+    candidates: np.ndarray,
+    tau: float,
+    n_pos: int,
+    device: str,
+    blocks: str = "gate",
+) -> list[dict]:
+    """Evalúa TODA la población en una sola carga de modelo (Fase 2):
+
+    1. `saor-engine decode-pop` decodifica los N genomas en GPU (kernel batcheado)
+       a adyacencias por candidato (sin decode CPU, inviable en 27B/40B).
+    2. `eval_sparse --adj-dir` carga el modelo UNA vez, reutiliza los logits del
+       profesor (cache en disco) y devuelve la KL de los N candidatos.
+
+    Devuelve una lista de dicts `{kl_global, d_arch_global}` en orden de columna.
+    """
+    gdir = Path(f"{TMP}/vib_pop_{NAME}/genomes")
+    adir = Path(f"{TMP}/vib_pop_{NAME}/adj")
+    cache = Path(f"{TMP}/vib_pop_{NAME}/teacher.bin")
+    gdir.mkdir(parents=True, exist_ok=True)
+    adir.mkdir(parents=True, exist_ok=True)
+    for f in gdir.glob("*.bin"):
+        f.unlink()
+    for f in adir.glob("*.bin"):
+        f.unlink()
+
+    for c in range(candidates.shape[1]):
+        with open(gdir / f"c{c:03d}.bin", "wb") as f:
+            f.write(np.asarray(candidates[:, c], np.float32).tobytes())
+
+    sh(
+        f"{DECODE_POP} decode-pop --genomes {gdir} --out {adir} "
+        f"--d-in {D_IN} --d-out {D_OUT} --n-layers {N_LAYERS} --tau {tau:.4f} --blocks {blocks}"
+    )
+    out = sh(
+        f"{EVAL} --model {MODEL} --prompts {PROMPTS} --adj-dir {adir} "
+        f"--n-positions {n_pos} --device {device} --teacher-cache {cache}"
+    )
+    results = json.loads(out.strip())
+    return results
 
 
 def main() -> None:
@@ -158,6 +202,13 @@ def main() -> None:
         "--streaming", action="store_true",
         help="topología CPPN REAL en el path de producción (embed_sparse --genome + kl_eval)",
     )
+    ap.add_argument(
+        "--batch-eval", action="store_true",
+        help="Fase 2: evaluar TODA la población en una sola carga de modelo "
+        "(decode-pop GPU + eval_sparse --adj-dir + profesor cacheado)",
+    )
+    ap.add_argument("--blocks", type=str, default="gate",
+                    help="bloques del decode-pop (default: gate; gate,up,down para espejo exacto)")
     ap.add_argument("--tau", type=float, default=TAU_CPPN, help="umbral CPPN (modo topología)")
     ap.add_argument("--n-pos", type=int, default=N_POS, help="posiciones del evaluador KL")
     ap.add_argument(
@@ -211,27 +262,50 @@ def main() -> None:
     for gen in range(args.gens):
         pop = state.spawn_population(args.seed + gen)
         scored = []
-        for col in range(pop.candidates.shape[1]):
-            z = pop.candidates[:, col]
-            if topology:
-                # Topología CPPN real: maximizar D_arch sujeto a KL <= 0.50.
-                sps = None
-                r = evaluate([], genome_z=z, tau=args.tau, streaming=args.streaming,
-                             n_pos=args.n_pos)
+        if args.batch_eval and topology:
+            # Fase 2: toda la población en una sola carga de modelo (decode GPU
+            # batcheado + profesor cacheado). fitness = D_arch - λ·max(0, KL-0.5).
+            results = evaluate_population(
+                pop.candidates, args.tau, args.n_pos, args.device, args.blocks
+            )
+            assert len(results) == pop.candidates.shape[1], (
+                f"batch-eval devolvió {len(results)} resultados para "
+                f"{pop.candidates.shape[1]} candidatos"
+            )
+            for col, z in enumerate(pop.candidates.T):
+                r = results[col]
                 d_arch, kl = r["d_arch_global"], r["kl_global"]
                 fitness = d_arch - LAMBDA_PEN * max(0.0, kl - KL_MAX)
-            else:
-                sps = decode_sparsities(z, rho)
-                r = evaluate(sps)
-                d_arch, kl = r["d_arch_global"], r["kl_global"]
-                fitness = -kl  # minimizar KL al D_arch fijado por rho
-            scored.append((fitness, kl, d_arch, sps, z))
-            if kl < best_kl["kl"]:
-                best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
-            if fitness > best_fit["fitness"]:
-                best_fit = {
-                    "fitness": fitness, "kl": kl, "darch": d_arch, "z": z, "sps": sps,
-                }
+                sps = None
+                scored.append((fitness, kl, d_arch, sps, z))
+                if kl < best_kl["kl"]:
+                    best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
+                if fitness > best_fit["fitness"]:
+                    best_fit = {
+                        "fitness": fitness, "kl": kl, "darch": d_arch, "z": z, "sps": sps,
+                    }
+        else:
+            for col in range(pop.candidates.shape[1]):
+                z = pop.candidates[:, col]
+                if topology:
+                    # Topología CPPN real: maximizar D_arch sujeto a KL <= 0.50.
+                    sps = None
+                    r = evaluate([], genome_z=z, tau=args.tau, streaming=args.streaming,
+                                 n_pos=args.n_pos)
+                    d_arch, kl = r["d_arch_global"], r["kl_global"]
+                    fitness = d_arch - LAMBDA_PEN * max(0.0, kl - KL_MAX)
+                else:
+                    sps = decode_sparsities(z, rho)
+                    r = evaluate(sps)
+                    d_arch, kl = r["d_arch_global"], r["kl_global"]
+                    fitness = -kl  # minimizar KL al D_arch fijado por rho
+                scored.append((fitness, kl, d_arch, sps, z))
+                if kl < best_kl["kl"]:
+                    best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
+                if fitness > best_fit["fitness"]:
+                    best_fit = {
+                        "fitness": fitness, "kl": kl, "darch": d_arch, "z": z, "sps": sps,
+                    }
         scored.sort(key=lambda s: -s[0])
         order = sorted(range(len(scored)), key=lambda i: -scored[i][0])
         state.update(pop, order[: params.mu])

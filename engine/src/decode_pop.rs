@@ -64,7 +64,14 @@ pub fn cmd(args: &[String]) -> ExitCode {
                 if let Some(v) = args.get(i) {
                     blocks = v
                         .split(',')
-                        .map(|s| s.trim().to_string())
+                        .map(|s| {
+                            match s.trim() {
+                                "gate" => "ffn_gate".to_string(),
+                                "up" => "ffn_up".to_string(),
+                                "down" => "ffn_down".to_string(),
+                                other => other.to_string(),
+                            }
+                        })
                         .filter(|s| !s.is_empty())
                         .collect();
                 }
