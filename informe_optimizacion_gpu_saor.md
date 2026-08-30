@@ -225,15 +225,15 @@ Fases ejecutadas y validadas (repo saor + hayai):
 
 | Criterio | Estado |
 |---|---|
-| 1. GPU ≥75% en la evaluación | **Implementado** (GEMM batcheado `[N×M]`); **medición pendiente** |
-| 2. VRAM 1.5–2.5 GB plana | **Acotado** (solo-adyacencia, override por capa liberado); medición pendiente |
-| 3. Cero deadlocks (150 gens) | Un proceso OpenCL por evaluación (D34); corrida de 150 gens pendiente |
-| 4. Tiempo por generación | Decode 4.6×, profesor cacheado, GEMM batcheado; la optimización del build de CSR por (candidato, capa, token) es la palanca pendiente para el target de 27B/40B |
+| 1. GPU ≥75% en la evaluación | **Medido en qwen27 (22 cands, n_pos=4, seq + `spmm_adj_batched`)**: media **47.4%**, picos **100%** (vs 24.5% con el path CSR). Los GEMMs densos y el SpMM esparso saturan la GPU; la ociosidad restante es CPU-bound (pre-pass/popcount, dequant F32 compartido por capa, lecturas de adyacencia). NO cumplido (≥75%). |
+| 2. VRAM 1.5–2.5 GB plana | **Medido en qwen27**: **0–1077 MiB** (smol era 109 MiB — smoke test). El override esparso se libera por capa; el techo es el buffer F32 de la capa (356 MB) + activaciones `[N·n_pos, d]` + streaming Q4. NO cumplido (por debajo de 1.5 GB). |
+| 3. Cero deadlocks (150 gens) | Un proceso OpenCL por evaluación (D34); corrida de 150 gens pendiente. |
+| 4. Tiempo por generación | **CUMPLIDO en qwen27 22 cands n_pos=4**: `kl_eval_batch` 360 s + `decode-pop` 108 s = **7.8 min/gen** (< 10 min; el evaluador per-token previo era >10 min y fue abortado). El kernel `spmm_adj_batched` (bit-tensor + pesos F32 compartidos por capa, un dispatch `[N×n_pos]`) eliminó el build/gather de CSR por (candidato, capa, token). |
 
-**Trabajo pendiente para cerrar los números:** (a) medición de telemetría GPU/VRAM,
-(b) corrida larga para deadlocks, (c) cache/GPU del build de CSR (dequant por capa
-una vez + `gather_csr_teacher` en GPU) para eliminar el re-build por token en los
-modelos grandes, (d) re-lanzar la evolución de Qwen3.8-27B con el pipeline nuevo.
+**Trabajo pendiente para cerrar los números:** (a) kernel esparso Q4 en GPU (dequant
+en-kernel, sin upload F32 de 23 GB/gen) para subir el GPU% y bajar el tiempo,
+(b) overlapp del dequant/pre-pass con el forward, (c) corrida larga (150 gens) para
+deadlocks, (d) re-lanzar la evolución de Qwen3.8-27B con el pipeline nuevo.
 
 Aprobado en la planificación: estas correcciones son parte de la especificación y
 se implementan junto con el resto del plan.
