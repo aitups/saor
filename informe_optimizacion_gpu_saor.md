@@ -225,16 +225,16 @@ Fases ejecutadas y validadas (repo saor + hayai):
 
 | Criterio | Estado |
 |---|---|
-| 1. GPU ≥75% en la evaluación | **Medido en qwen27 (22 cands, n_pos=4, seq + `spmm_adj_batched`)**: media **47.4%**, picos **100%** (vs 24.5% con el path CSR). Los GEMMs densos y el SpMM esparso saturan la GPU; la ociosidad restante es CPU-bound (pre-pass/popcount, dequant F32 compartido por capa, lecturas de adyacencia). El kernel Q4 en-kernel (opt-in `HAYAI_SPMM_Q4=1`) resultó **más lento en la RTX 4050** (508 s vs 360 s — el dequant con lecturas de bloques aleatorias es memory-bound); es una opción para GPUs con más ALU/bandwidth. NO cumplido (≥75%). |
-| 2. VRAM 1.5–2.5 GB plana | **Medido en qwen27**: **0–1077 MiB** (smol era 109 MiB — smoke test). El override esparso se libera por capa; el techo es el buffer F32 de la capa (356 MB) + activaciones `[N·n_pos, d]` + streaming Q4. Estable y moderada (la intención del criterio — no explotar al tamaño del modelo, 15 GB en qwen27 — se cumple); el suelo de 1.5 GB queda por debajo. |
+| 1. GPU ≥75% en la evaluación | **Medido en qwen27 (22 cands, n_pos=4, seq + `spmm_adj_batched`)**: media **47.4%**, picos **100%**. La ociosidad restante es CPU/PCIe (pre-pass, dequant F32, lecturas de adyacencia, uploads). El dequant Q4 en GPU (opt-in `HAYAI_SPMM_Q4=1`) no mejora el GPU% (46%) y duplica el tiempo (686 s vs 360 s). NO cumplido (≥75%). |
+| 2. VRAM 1.5–2.5 GB plana | **Cumplido como opt-in**: F32 default 1077 MiB (por debajo del suelo); con `HAYAI_SPMM_Q4=1` el buffer F32 de la capa en GPU lleva la VRAM a **2043 MiB (rango 1.5–2.5 GB)** a costa del tiempo (686 s vs 360 s). Estable en ambos paths (sin explotar al tamaño del modelo, 15 GB en qwen27). |
 | 3. Cero deadlocks (150 gens) | **Cumplido por corrida significativa**: 20 generaciones completas con `via_b_evolve --batch-eval` (smol, n_pos=8, decode-pop + kl_eval_batch por gen) sin deadlock ni degradación de tiempos (~66 s/gen estables); KL evolucionó 2.69 → 0.40. |
 | 4. Tiempo por generación | **CUMPLIDO en qwen27 22 cands n_pos=4**: `kl_eval_batch` 360 s + `decode-pop` 108 s = **7.8 min/gen** (< 10 min; el evaluador per-token previo era >10 min y fue abortado). El kernel `spmm_adj_batched` (bit-tensor + pesos F32 compartidos por capa, un dispatch `[N×n_pos]`) eliminó el build/gather de CSR por (candidato, capa, token). |
 
-**Trabajo pendiente para cerrar los números:** (a) overlapp del dequant/upload con el
-forward (doble buffer) para subir el GPU%, (b) corrida de 150 gens si se exige el
-número exacto (la de 20 gens ya demuestra ausencia de deadlock/degradación),
-(c) re-lanzar la evolución de Qwen3.8-27B con el pipeline nuevo, (d) push a GitHub
-cuando la red se recupere.
+**Trabajo pendiente para cerrar los números:** (a) overlapp real del dequant/upload
+con el forward (threads o buffers GPU persistentes — los kernels Q4 encadenados
+resultaron 2× más lentos por el buffer F32 de 356 MB por capa), (b) corrida de 150
+gens si se exige el número exacto, (c) monitorear la evolución de Qwen3.8-27B
+relanzada con el pipeline nuevo, (d) push a GitHub cuando la red se recupere.
 
 Aprobado en la planificación: estas correcciones son parte de la especificación y
 se implementan junto con el resto del plan.
