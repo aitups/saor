@@ -191,6 +191,50 @@ Al unificar la población en un único flujo batcheado, el equipo de desarrollo 
 
 ## 3.5 Anexo técnico — Correcciones de ingeniería (Fase 0)
 
+
+---
+
+## 5. Estado de implantación (2026-08-30)
+
+Fases ejecutadas y validadas (repo saor + hayai):
+
+- **Fase 0 — Informe corregido.** Genoma 466 f32, batcheo solo-adyacencia, tabla de
+  FLOPs, criterio 4 por clase de modelo.
+- **Fase 1 — Decode batcheado.** `cppn_decode_adj_batched` (2D `[conexiones, N]`) +
+  `ClEngine::cppn_decode_adjacency_batched`. **Bit-exacto** (N=22): 4.6× (SmolLM2),
+  3.7× (Qwen3.5-4B). Test: `saor-engine decode-bench --batched N`.
+- **Fase 2 — Evaluador batcheado agnóstico a arquitectura.**
+  - `saor-engine decode-pop`: decode GPU de la población → adyacencias por candidato.
+  - `StreamingGenerator::forward_batched` (path Dense) + `forward_batched_hybrid`
+    (path Hybrid, estado KV + DeltaNet por candidato) + `forward_batched_any`
+    (despacho por `ModelKind`).
+  - **GEMM batcheado** `ggml_gemv_batched_q4_k` (un dispatch `[N×M]`, pesos leídos
+    una vez) + `execute_quant_gemv_batched` (Q4_K → batcheado, resto → secuencial).
+  - `kl_eval_batch`: KL de la población con logits del profesor cacheados y override
+    construido al vuelo por (candidato, capa) — RAM acotada.
+  - **Validación KL:** SmolLM2 2.389384 vs 2.389382 de referencia (paridad); Qwen3.8-27B
+    (híbrido) KL 0.006 sin crash con topología real.
+- **Fase 3 — Loop CMA-ES.** `via_b_evolve.py --batch-eval` usa `decode-pop` +
+  `kl_eval_batch` (una carga de modelo por generación). Validado: 1 generación
+  SmolLM2 en 31.8 s.
+- **Fase 4 — Cache del profesor.** `kl_eval --teacher-cache` y `eval_sparse
+  --teacher-cache`: logits del profesor precomputados una vez por ejecución (paridad
+  confirmada).
+
+### Estado de los criterios de aceptación (honesto)
+
+| Criterio | Estado |
+|---|---|
+| 1. GPU ≥75% en la evaluación | **Implementado** (GEMM batcheado `[N×M]`); **medición pendiente** |
+| 2. VRAM 1.5–2.5 GB plana | **Acotado** (solo-adyacencia, override por capa liberado); medición pendiente |
+| 3. Cero deadlocks (150 gens) | Un proceso OpenCL por evaluación (D34); corrida de 150 gens pendiente |
+| 4. Tiempo por generación | Decode 4.6×, profesor cacheado, GEMM batcheado; la optimización del build de CSR por (candidato, capa, token) es la palanca pendiente para el target de 27B/40B |
+
+**Trabajo pendiente para cerrar los números:** (a) medición de telemetría GPU/VRAM,
+(b) corrida larga para deadlocks, (c) cache/GPU del build de CSR (dequant por capa
+una vez + `gather_csr_teacher` en GPU) para eliminar el re-build por token en los
+modelos grandes, (d) re-lanzar la evolución de Qwen3.8-27B con el pipeline nuevo.
+
 Aprobado en la planificación: estas correcciones son parte de la especificación y
 se implementan junto con el resto del plan.
 
