@@ -90,6 +90,7 @@ def decode_sparsities(z: np.ndarray, rho: float, step: int = 4) -> list[float]:
 
 EMBED = Path(r"d:\Documents\pySrc\saor\target\release\embed_sparse.exe")
 KL_EVAL = Path(r"d:\Documents\pySrc\hayai\target\release\examples\kl_eval.exe")
+KL_EVAL_BATCH = Path(r"d:\Documents\pySrc\hayai\target\release\examples\kl_eval_batch.exe")
 DUMP_WEIGHTS = Path(r"d:\Documents\pySrc\hayai\target\release\examples\dump_weights.exe")
 DECODE_POP = Path(r"d:\Documents\pySrc\saor\target\release\saor-engine.exe")
 W_DIR = Path(r"d:\Documents\pySrc\.scratch\w_frontier")  # dump de pesos (una vez)
@@ -148,12 +149,13 @@ def evaluate_population(
     device: str,
     blocks: str = "gate",
 ) -> list[dict]:
-    """Evalúa TODA la población en una sola carga de modelo (Fase 2):
+    """Evalúa TODA la población en una sola carga de modelo (Fase 2, agnóstico):
 
     1. `saor-engine decode-pop` decodifica los N genomas en GPU (kernel batcheado)
        a adyacencias por candidato (sin decode CPU, inviable en 27B/40B).
-    2. `eval_sparse --adj-dir` carga el modelo UNA vez, reutiliza los logits del
-       profesor (cache en disco) y devuelve la KL de los N candidatos.
+    2. `kl_eval_batch` carga el modelo UNA vez (path Dense o Hybrid según la
+       arquitectura), reutiliza los logits del profesor (cache en disco) y evalúa
+       los N candidatos con GEMM batcheado.
 
     Devuelve una lista de dicts `{kl_global, d_arch_global}` en orden de columna.
     """
@@ -176,7 +178,7 @@ def evaluate_population(
         f"--d-in {D_IN} --d-out {D_OUT} --n-layers {N_LAYERS} --tau {tau:.4f} --blocks {blocks}"
     )
     out = sh(
-        f"{EVAL} --model {MODEL} --prompts {PROMPTS} --adj-dir {adir} "
+        f"{KL_EVAL_BATCH} --model {MODEL} --prompts {PROMPTS} --adj-dir {adir} "
         f"--n-positions {n_pos} --device {device} --teacher-cache {cache}"
     )
     results = json.loads(out.strip())
