@@ -18,6 +18,9 @@ pub struct KernelRunParams {
     pub batch: usize,
     pub tau: f32,
     pub seed: u64,
+    /// Capa intermedia para el test de la coordenada `y_layer` (Vía B multi-capa).
+    pub layer: usize,
+    pub n_layers: usize,
 }
 
 impl Default for KernelRunParams {
@@ -28,6 +31,8 @@ impl Default for KernelRunParams {
             batch: 32,
             tau: 0.42,
             seed: 42,
+            layer: 7,
+            n_layers: 30,
         }
     }
 }
@@ -82,7 +87,7 @@ fn dmatrix(v: &[f32], rows: usize, cols: usize) -> DMatrix<f32> {
 }
 
 /// Ejecuta el pipeline y devuelve el reporte JSON.
-pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
+pub fn run(params: &KernelRunParams, no_data: bool) -> Result<serde_json::Value, String> {
     let mut engine = ClEngine::init()?;
     let device_name = engine.device_name();
     engine.prepare()?;
@@ -129,7 +134,7 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
     // topología vacía; tau=0.05 la vuelve no vacía). El kernel deriva y_layer
     // internamente desde (layer, n_layers); la referencia usa `layer_coord` +
     // `instantiate_layer` (deben coincidir bit a bit).
-    let (n_layer_test, n_layers_test) = (7usize, 30usize);
+    let (n_layer_test, n_layers_test) = (params.layer, params.n_layers);
     let tau_b = 0.30f32;
     let (adj_b, active_b) = engine.cppn_decode_adjacency(
         &flat,
@@ -198,23 +203,41 @@ pub fn run(params: &KernelRunParams) -> Result<serde_json::Value, String> {
             "adj_bytes_diff_layer": adj_diff_b,
             "cka": cka,
         },
-        // Datos crudos para la validación cruzada con NumPy.
-        "data": {
-            "genome": flat,
-            "x": x,
-            "w_dense": w_dense,
-            "adjacency": adjacency,
-            "y_dense": y_dense,
-            "y_csr": y_csr,
-            "gram_h0": k0,
-            "gram_h1": k1,
+        // Datos crudos para la validación cruzada con NumPy. Con dims grandes (p.ej.
+        // 27B: 5120×17408 → 89M f32 de W ≈ 356 MB de JSON) se omiten los arrays
+        // densos; las métricas (err_w, adj_diff, active_match) siguen validando el
+        // sustrato a la escala pedida.
+        "data": if no_data || params.d_in * params.d_out > 2_000_000 {
+            json!({
+                "genome": flat,
+                "x": x,
+                "w_dense": Vec::<f32>::new(),
+                "adjacency": adjacency,
+                "y_dense": Vec::<f32>::new(),
+                "y_csr": Vec::<f32>::new(),
+                "gram_h0": Vec::<f32>::new(),
+                "gram_h1": Vec::<f32>::new(),
+            })
+        } else {
+            json!({
+                "genome": flat,
+                "x": x,
+                "w_dense": w_dense,
+                "adjacency": adjacency,
+                "y_dense": y_dense,
+                "y_csr": y_csr,
+                "gram_h0": k0,
+                "gram_h1": k1,
+            })
         }
     }))
 }
 
-/// Maneja `saor-engine kernels-run [--out <path>]`.
+/// Maneja `saor-engine kernels-run [--out <path>] [--d-in N] [--d-out N] ...`.
 pub fn cmd(args: &[String]) -> std::process::ExitCode {
     let mut out_path: Option<String> = None;
+    let mut params = KernelRunParams::default();
+    let mut no_data = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -222,6 +245,49 @@ pub fn cmd(args: &[String]) -> std::process::ExitCode {
                 i += 1;
                 out_path = args.get(i).cloned();
             }
+            "--d-in" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_in = v;
+                }
+            }
+            "--d-out" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.d_out = v;
+                }
+            }
+            "--batch" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.batch = v;
+                }
+            }
+            "--tau" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.tau = v;
+                }
+            }
+            "--seed" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.seed = v;
+                }
+            }
+            "--layer" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.layer = v;
+                }
+            }
+            "--n-layers" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    params.n_layers = v;
+                }
+            }
+            "--no-data" => no_data = true,
             other => {
                 eprintln!("kernels-run: argumento desconocido '{other}'");
                 return std::process::ExitCode::from(2);
@@ -230,8 +296,7 @@ pub fn cmd(args: &[String]) -> std::process::ExitCode {
         i += 1;
     }
 
-    let params = KernelRunParams::default();
-    match run(&params) {
+    match run(&params, no_data) {
         Ok(report) => {
             if let Some(path) = out_path {
                 let path = Path::new(&path);
