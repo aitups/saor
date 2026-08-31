@@ -697,18 +697,20 @@
   cuatro (KL 0.14 a sp 0.25, muy por debajo del target 0.5). El híbrido
   gated-DeltaNet de 65 capas tolera la poda de forma excepcional — el FFN es
   redundante en este modelo.
-  > ⚠️ **BAJO AUDITORÍA (2026-08-31):** esta afirmación NO es reproducible con el
-  > pipeline actual. La evolución real del 27B (10-12 gens, n_layers 65) da
-  > **KL 2.38-2.53**, y el genoma transferido da KL ~3.0 (batch) / 8.82
-  > (producción). El 27B resultó el **más sensible** de los modelos medidos, no
-  > el más robusto. La frontera uniforme de esta sección (KL 0.143 a sp 0.25)
-  > queda pendiente de re-medición con la poda por magnitud real.
+  > ✅ **VERIFICADO (2026-08-31) para la PODA POR MAGNITUD**: la frontera uniforme
+  > del 27B (KL 0.0158/0.043/0.076/0.114/0.1404 a sp 0.05-0.25, re-medida con
+  > `embed_sparse --sparsities` + `kl_eval`, n_pos 4) confirma el "KL 0.14 a sp
+  > 0.25" original. **No obstante, la TOPOLOGÍA CPPN binaria (Vía B --full) NO
+  > alcanza esa calidad en el 27B** (KL 2.5-8.8 a D_arch 0.07-0.19): la brecha es
+  > de la topología, no del modelo. La evolución Vía B del 27B no converge a la
+  > magnitud; la evolución del 4B sí (KL 0.38).
 - **Evolución Vía B** lanzada (4 gens, `--streaming --gpu`, n_pos 4, ~1-2 días
   por el coste kl_eval de 27B, secuencial). El ranking de sensibilidad queda:
   **27B < 4B << SmolLM2 << ALIA** (ALIA es ~70× más sensible que el 27B a la
   misma densidad).
-  > ⚠️ **BAJO AUDITORÍA:** el ranking contradice las mediciones actuales (el 27B
-  > Hybrid es el más sensible, KL ~2.5-3.0 a baja esparsidad).
+  > ✅ **VERIFICADO para la magnitud**: la frontera del 27B (KL 0.14 @ sp 0.25)
+  > es la más baja de los cuatro — el ranking es correcto para la poda por
+  > magnitud. La topología CPPN (Vía B --full) no la alcanza en el 27B (KL 2.5+).
 
 ## Notas externas
 - La PR `pr_soporte_gguf_disperso_v2.md` de `hayai` no está en este directorio;
