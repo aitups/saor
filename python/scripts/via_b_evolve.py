@@ -232,6 +232,11 @@ def main() -> None:
         "--name", type=str, default=NAME,
         help="prefijo de salidas (via_b_best_genome_<name>.bin, via_b_history_<name>.json)",
     )
+    ap.add_argument(
+        "--init-genome", type=str, default=None,
+        help="genoma .bin (466 f32) como media inicial del CMA-ES (semillado desde "
+        "una corrida previa en lugar de arrancar de un genoma aleatorio)",
+    )
     args = ap.parse_args()
     GPU_EMBED = args.gpu
     MODEL = args.model
@@ -250,7 +255,26 @@ def main() -> None:
     genome_dim = CppnGenome().param_count  # 466
     rho = float(np.clip(1.0 - args.darch, 0.05, 0.95))  # densidad media fija
     params = CmaEsParams(genome_dim, args.seed)
-    mean0 = random_genome(args.seed)  # perfil campana inicial
+    if args.init_genome:
+        # Semillado: media inicial = genoma previo (el decode usa n_layers/tau del
+        # modelo, así que el mismo genoma re-decoda con la coordenada correcta).
+        raw = np.fromfile(args.init_genome, dtype=np.float32)
+        if raw.size >= genome_dim:
+            mean0 = raw[:genome_dim].astype(np.float32)
+            print(
+                f"[init-genome] media inicial = {args.init_genome} "
+                f"({raw.size} f32, usando los {genome_dim} primeros)",
+                flush=True,
+            )
+        else:
+            print(
+                f"[init-genome] {args.init_genome} tiene {raw.size} f32 < {genome_dim}; "
+                f"se arranca de un genoma aleatorio",
+                flush=True,
+            )
+            mean0 = random_genome(args.seed)
+    else:
+        mean0 = random_genome(args.seed)  # perfil campana inicial
     state = CmaEsState(params, mean0)
 
     history = []
