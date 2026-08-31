@@ -146,6 +146,16 @@ es 1/3 del FFN y up/down quedan densos)*
 *`D_arch × fracción del cómputo que es FFN` (~0.6-0.7 según modelo). El 27B
 además alcanzó un punto casi sin pérdida: KL 0.0005 a 0.4 % de compresión.
 
+> ⚠️ **NOTA DE REVISIÓN (sesión de optimización GPU, 2026-08-31):** los valores de
+> esta tabla para **Qwen3.8-27B (KL 0.394 @ D_arch 0.107)** y el ranking de
+> sensibilidad del §6.3 NO son reproducibles con el pipeline actual (`decode-pop` +
+> `kl_eval_batch`, forward seq con estado DeltaNet persistente). La evolución
+> real del 27B (10-12 generaciones, n_layers 65 corregido, semillada) produce
+> **KL 2.38-2.53 @ D_arch 0.07-0.28**; el genoma qwen35 transferido da KL ~3.0
+> (batch) y 8.82 (path de producción `embed_sparse`+`kl_eval`). Los datos
+> originales de esta sección quedan **bajo auditoría** y no deben usarse como
+> referencia hasta su verificación.
+
 **Perfiles de densidad por capa** (gate, subsample; % de conexiones activas):
 
 ```
@@ -298,6 +308,11 @@ Los GGUF embebidos (formato D16) se ejecutan con el `StreamingGenerator` de
 3. **El ranking de sensibilidad (27B < 4B ≪ SmolLM2 < ALIA)** es el resultado
    más transferible: guía dónde tiene sentido la poda (híbridos gated-DeltaNet
    vs. arquitecturas densas sensibles como ALIA).
+   > ⚠️ **BAJO AUDITORÍA (2026-08-31):** las mediciones de la sesión de
+   > optimización GPU contradicen este ranking para el 27B: el Qwen3.8-27B
+   > (Hybrid, 27B) resultó el **más sensible** a la poda de topología CPPN
+   > (KL ~2.5-3.0 a D_arch 0.07-0.19; KL 8.82 en el path de producción),
+   > no el más tolerante. El ranking original debe considerarse no verificado.
 4. **La topología CPPN automatiza el perfil** pero no supera al baseline
    uniforme de forma consistente con 4 generaciones; el pipeline GPU y la
    publicación de genomas permiten escalar la búsqueda.
