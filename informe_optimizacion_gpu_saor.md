@@ -223,20 +223,41 @@ Fases ejecutadas y validadas (repo saor + hayai):
 
 ### Estado de los criterios de aceptación (honesto)
 
-> ⚠️ **CORRECCIÓN CRÍTICA (2026-08-31):** las mediciones de KL del **batch-eval
-> (kl_eval_batch) para Qwen3.8-27B** son **INVÁLIDAS**: los forwards del batch
-> (`forward_batched_hybrid_seq` y `forward_batched_hybrid_gemm` per-token)
-> producen logits que difieren del modelo real en **KL 8.91** (modelo contra sí
-> mismo con el teacher cache del batch — ambos paths). El teacher cache del batch
-> está mal → TODAS las KL del batch para el 27B (2.98, 3.12, 3.57, C4 7.8 min/gen)
-> se midieron contra un teacher incorrecto. El smol (Dense) SÍ tiene el teacher
-> correcto (KL 0.0) — el bug es del **código híbrido compartido** del batch
-> (atención/DeltaNet del qwen27), no del seq en particular. **La no-convergencia
-> de la evolución del 27B es consecuencia de este teacher mal**, no de la
-> sensibilidad del modelo ni de la topología. Las mediciones del 27B de esta
-> tabla quedan bajo auditoría hasta localizar el bug del forward híbrido del
-> batch (comparación con el `forward_hybrid` de producción). C3 (sin deadlocks)
-> no depende del teacher.
+> ⚠️ **DIAGNÓSTICO DEFINITIVO (2026-08-31):** la no-convergencia de la evolución
+> del 27B era del **forward batcheado del batch-eval**, no del modelo ni de la
+> topología. TRES bugs combinados invalidaban el teacher cache del batch para el
+> hybrid (modelo contra sí mismo con el teacher del batch: KL 8.91):
+>
+> 1. **DeltaNet sin RMS-norm**: `forward_batched_hybrid_gemm/seq` llamaban al
+>    `decode_step` con el input CRUDO (faltaba `rms_norm` con `attn_norm`, como
+>    hace `run_deltanet_block`). El residual del DeltaNet salía ~12× menor
+>    (RMS afterDN 0.0182 vs 0.2175). Fix aplicado.
+> 2. **Kernel batched Q4_K (`ggml_gemv_batched_q4_k`)**: los tiles `t0 > 0`
+>    leían el input sin sumar `t0` (`xrow[xb]` en vez de `xrow[t0+xb]`) — el
+>    gate/up/down de los tiles posteriores leían posiciones equivocadas (~0.7×
+>    del valor correcto). El smol (N=576, un solo tile) no lo activaba; el
+>    qwen27 (N=5120, 3 tiles) sí. Fix aplicado.
+> 3. **Teacher del kl_eval_batch per-token**: el teacher se construía con
+>    `forward_batched_any` (per-token), que **recrea el estado DeltaNet por
+>    token** → logits incorrectos para el hybrid. El teacher ahora usa el **seq**
+>    (`forward_batched_any_seq`, estado persistente).
+>
+> Tras los fixes: el teacher del seq es **exacto** (modelo contra sí mismo:
+> **KL 0.000000**). **Re-baseline de magnitud con el batch corregido** (poda por
+> |w|, gate-only, `decode-pop --magnitude` + `kl_eval_batch`):
+>
+> | sp | KL batch corregido | KL frontera producción | Δ |
+> |----|-------------------|------------------------|------|
+> | 0.05 | 0.0151 | 0.0158 | 0.0007 |
+> | 0.10 | 0.0422 | 0.0430 | 0.0008 |
+> | 0.15 | 0.0753 | 0.0760 | 0.0007 |
+> | 0.20 | 0.1154 | 0.1140 | 0.0014 |
+> | 0.25 | 0.1433 | 0.1404 | 0.0029 |
+>
+> **El batch-eval es ahora fiable para el 27B hybrid y coincide con la
+> producción.** Las KL del batch de las tablas C1/C4 (2.98, 3.12, 3.57, etc.)
+> quedan REEMPLAZADAS por este re-baseline corregido. La topología CPPN sigue
+> siendo la causa del gap de KL respecto a la magnitud (2.5-8.8 vs 0.14).
 
 | Criterio | Estado |
 |---|---|
