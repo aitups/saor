@@ -223,6 +223,21 @@ Fases ejecutadas y validadas (repo saor + hayai):
 
 ### Estado de los criterios de aceptación (honesto)
 
+> ⚠️ **CORRECCIÓN CRÍTICA (2026-08-31):** las mediciones de KL del **batch-eval
+> (kl_eval_batch) para Qwen3.8-27B** son **INVÁLIDAS**: los forwards del batch
+> (`forward_batched_hybrid_seq` y `forward_batched_hybrid_gemm` per-token)
+> producen logits que difieren del modelo real en **KL 8.91** (modelo contra sí
+> mismo con el teacher cache del batch — ambos paths). El teacher cache del batch
+> está mal → TODAS las KL del batch para el 27B (2.98, 3.12, 3.57, C4 7.8 min/gen)
+> se midieron contra un teacher incorrecto. El smol (Dense) SÍ tiene el teacher
+> correcto (KL 0.0) — el bug es del **código híbrido compartido** del batch
+> (atención/DeltaNet del qwen27), no del seq en particular. **La no-convergencia
+> de la evolución del 27B es consecuencia de este teacher mal**, no de la
+> sensibilidad del modelo ni de la topología. Las mediciones del 27B de esta
+> tabla quedan bajo auditoría hasta localizar el bug del forward híbrido del
+> batch (comparación con el `forward_hybrid` de producción). C3 (sin deadlocks)
+> no depende del teacher.
+
 | Criterio | Estado |
 |---|---|
 | 1. GPU ≥75% en la evaluación | **Medido en qwen27 (22 cands, n_pos=4, seq + `spmm_adj_batched`)**: media **47.4%**, picos **100%**. La ociosidad restante es CPU/PCIe (pre-pass, dequant F32, lecturas de adyacencia, uploads). El dequant Q4 en GPU (opt-in `HAYAI_SPMM_Q4=1`) no mejora el GPU% (46%) y duplica el tiempo (686 s vs 360 s). NO cumplido (≥75%). |

@@ -367,6 +367,7 @@ dependencies = [
  "nalgebra",
  "rand_chacha",
  "rand_core",
+ "rayon",
  "saor-domain",
  "saor-opencl",
  "saor-streamer",

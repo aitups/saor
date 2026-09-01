@@ -16,5 +16,6 @@ saor-streamer = { path = "../crates/saor-streamer" }
 nalgebra.workspace = true
 rand_chacha.workspace = true
 rand_core = "0.6"
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
