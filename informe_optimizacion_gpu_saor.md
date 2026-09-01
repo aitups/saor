@@ -258,6 +258,14 @@ Fases ejecutadas y validadas (repo saor + hayai):
 > producción.** Las KL del batch de las tablas C1/C4 (2.98, 3.12, 3.57, etc.)
 > quedan REEMPLAZADAS por este re-baseline corregido. La topología CPPN sigue
 > siendo la causa del gap de KL respecto a la magnitud (2.5-8.8 vs 0.14).
+>
+> **Evolución Vía B por magnitud (lanzada 2026-08-31):** con el evaluador
+> corregido, `via_b_evolve --batch-eval --magnitude` (perfil de densidad del CPPN
+> + conexiones de mayor |w|, D_arch fijado por `--darch`) converge: **gen 0 del
+> qwen27 @ D_arch 0.10 → KL 0.0115** (mejor que el perfil uniforme 0.042 y muy
+> por debajo de la CPPN binaria 2.5-8.8). La corrida completa (12 gen, ~4-5 h)
+> queda en `python/scripts/via_b_evolve.py --magnitude --model <qwen27> ...` con
+> `step=16` para el decode del CPPN a escala 27B.
 
 | Criterio | Estado |
 |---|---|
