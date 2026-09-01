@@ -79,7 +79,9 @@ def decode_sparsities(z: np.ndarray, rho: float, step: int = 4) -> list[float]:
     """Perfil por capa del CPPN global reescalado a densidad media rho.
 
     `step > 1` submuestrea el sustrato (estimador de densidad rápido para el
-    loop CMA-ES); la topología exacta se decodifica después con step=1.
+    loop CMA-ES); la topología exacta se decodifica después con step=1. A escala
+    27B (5120×17408, 65 capas) step=16 da ~348K muestras/capa (error std
+    ≈ 0.0005) y ~10-20 s por candidato.
     """
     genome = CppnGenome.from_flatten(z[:466].astype(np.float32))
     densities, _ = genome.decode_global(
@@ -185,6 +187,53 @@ def evaluate_population(
     return results
 
 
+def evaluate_population_magnitude(
+    candidates: np.ndarray,
+    rho: float,
+    n_pos: int,
+    device: str,
+    blocks: str = "gate",
+    step: int = 16,
+) -> list[dict]:
+    """Evalúa la población en modo MAGNITUD (sin topología CPPN):
+
+    1. Perfil de esparsidad por (candidato, capa) desde el CPPN (decode_sparsities,
+       reescalado a densidad media rho).
+    2. `decode-pop --magnitude` construye la adyacencia = conexiones de MAYOR |w|
+       al perfil (sort por capa compartido + pesos del dump_weights).
+    3. `kl_eval_batch` evalúa (profesor cacheado). El evaluador batcheado está
+       corregido para el hybrid (rms_norm DeltaNet, kernel batched Q4_K tiles,
+       teacher seq) — re-baseline coincide con la producción (KL 0.015-0.143).
+
+    Devuelve una lista de dicts `{kl_global, d_arch_global}` en orden de columna.
+    """
+    sdir = Path(f"{TMP}/vib_pop_{NAME}/sps")
+    adir = Path(f"{TMP}/vib_pop_{NAME}/adj")
+    cache = Path(f"{TMP}/vib_pop_{NAME}/teacher.bin")
+    sdir.mkdir(parents=True, exist_ok=True)
+    adir.mkdir(parents=True, exist_ok=True)
+    for f in sdir.glob("*.bin"):
+        f.unlink()
+    for f in adir.glob("*.bin"):
+        f.unlink()
+
+    for c in range(candidates.shape[1]):
+        sps = decode_sparsities(candidates[:, c], rho, step=step)
+        with open(sdir / f"c{c:03d}.bin", "wb") as f:
+            f.write(np.asarray(sps, np.float32).tobytes())
+
+    sh(
+        f"{DECODE_POP} decode-pop --magnitude --sparsities {sdir} --weights {W_DIR} "
+        f"--out {adir} --d-in {D_IN} --d-out {D_OUT} --n-layers {N_LAYERS} --blocks {blocks}"
+    )
+    out = sh(
+        f"{KL_EVAL_BATCH} --model {MODEL} --prompts {PROMPTS} --adj-dir {adir} "
+        f"--n-positions {n_pos} --device {device} --teacher-cache {cache}"
+    )
+    results = json.loads(out.strip())
+    return results
+
+
 def main() -> None:
     # Los globals se declaran al inicio: los `default=` de argparse leen los
     # valores de módulo (SmolLM2) y luego se reasignan desde los args.
@@ -208,6 +257,19 @@ def main() -> None:
         "--batch-eval", action="store_true",
         help="Fase 2: evaluar TODA la población en una sola carga de modelo "
         "(decode-pop GPU + eval_sparse --adj-dir + profesor cacheado)",
+    )
+    ap.add_argument(
+        "--magnitude", action="store_true",
+        help="modo MAGNITUD: adyacencia = conexiones de mayor |w| al perfil de "
+        "densidad del CPPN (decode-pop --magnitude), sin topología CPPN. Usa el "
+        "batch-eval corregido (teacher seq + kernel batched Q4_K) — re-baseline "
+        "coincide con la producción.",
+    )
+    ap.add_argument(
+        "--step", type=int, default=16,
+        help="submuestreo del sustrato del CPPN para el perfil de densidad "
+        "(step=16 → ~348K muestras/capa a 27B, error std ~0.0005; bajar a 8 si "
+        "se necesita más resolución del perfil)",
     )
     ap.add_argument("--blocks", type=str, default="gate",
                     help="bloques del decode-pop (default: gate; gate,up,down para espejo exacto)")
@@ -288,7 +350,29 @@ def main() -> None:
     for gen in range(args.gens):
         pop = state.spawn_population(args.seed + gen)
         scored = []
-        if args.batch_eval and topology:
+        if args.batch_eval and args.magnitude:
+            # Modo MAGNITUD: perfil de densidad del CPPN + top-|w| (sin topología).
+            # fitness = -KL al D_arch fijado por rho (objetivo Vía B corregido).
+            results = evaluate_population_magnitude(
+                pop.candidates, rho, args.n_pos, args.device, args.blocks, args.step
+            )
+            assert len(results) == pop.candidates.shape[1], (
+                f"batch-magnitude devolvió {len(results)} resultados para "
+                f"{pop.candidates.shape[1]} candidatos"
+            )
+            for col, z in enumerate(pop.candidates.T):
+                r = results[col]
+                d_arch, kl = r["d_arch_global"], r["kl_global"]
+                fitness = -kl  # minimizar KL al D_arch fijado por rho
+                sps = decode_sparsities(z, rho, step=args.step)
+                scored.append((fitness, kl, d_arch, sps, z))
+                if kl < best_kl["kl"]:
+                    best_kl = {"kl": kl, "darch": d_arch, "z": z, "sps": sps}
+                if fitness > best_fit["fitness"]:
+                    best_fit = {
+                        "fitness": fitness, "kl": kl, "darch": d_arch, "z": z, "sps": sps,
+                    }
+        elif args.batch_eval and topology:
             # Fase 2: toda la población en una sola carga de modelo (decode GPU
             # batcheado + profesor cacheado). fitness = D_arch - λ·max(0, KL-0.5).
             results = evaluate_population(
