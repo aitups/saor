@@ -280,6 +280,18 @@ Fases ejecutadas y validadas (repo saor + hayai):
 > (modelo completo; 45 capas esparsas + 20 densas). Coincide con el batch
 > (0.0092, den del gate) — ambos evaluadores confirman **KL ≈ 0.01** para el
 > perfil de magnitud optimizado.
+>
+> **Modelos publicados en Hugging Face (colección `saor-sparse-gguf-models`)**
+> [2026-08-31]: tres GGUFs con FFN podado en formato D16 (adyacencia + pesos
+> activos Q4_K), ejecutables con Hayai (`hayai generate --model <file>`):
+> - `aitups/Qwen3.8-27B-saor` — magnitud + perfil CPPN, **KL 0.0103 @ D_arch 0.041**.
+> - `aitups/Qwen3.5-4B-saor` — magnitud + perfil CPPN, **KL 0.0638 @ D_arch 0.033**
+>   (evolución de magnitud relanzada con el evaluador corregido).
+> - `aitups/ALIA-40b-saor` — topología CPPN (Vía B), **KL 0.723 @ D_arch 0.018**
+>   (la magnitud "explota" en el 40B: KL 2.15 a sp 0.2 — su mejor resultado es la
+>   CPPN; ver la model card).
+> Colección: `https://huggingface.co/collections/aitups/...` (slug
+> `saor-sparse-gguf-models-magnitude-pruned`).
 
 | Criterio | Estado |
 |---|---|

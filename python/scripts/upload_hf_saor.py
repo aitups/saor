@@ -78,7 +78,7 @@ def main() -> int:
         title=title,
         namespace=NAMESPACE,
         description=description,
-        exist_ok=True,
+        exists_ok=True,
     )
     col_id = col.slug if hasattr(col, "slug") else col.name
     for repo_id in repo_ids:
@@ -86,6 +86,7 @@ def main() -> int:
             collection_slug=col_id,
             item_id=repo_id,
             item_type="model",
+            exists_ok=True,
         )
         print(f"[hf] coleccion {col_id}: añadido {repo_id}", flush=True)
     print(f"[hf] colección: https://huggingface.co/collections/{NAMESPACE}/{col_id}", flush=True)
