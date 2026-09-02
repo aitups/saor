@@ -259,13 +259,21 @@ Fases ejecutadas y validadas (repo saor + hayai):
 > quedan REEMPLAZADAS por este re-baseline corregido. La topología CPPN sigue
 > siendo la causa del gap de KL respecto a la magnitud (2.5-8.8 vs 0.14).
 >
-> **Evolución Vía B por magnitud (lanzada 2026-08-31):** con el evaluador
+> **Evolución Vía B por magnitud (completada 2026-08-31):** con el evaluador
 > corregido, `via_b_evolve --batch-eval --magnitude` (perfil de densidad del CPPN
-> + conexiones de mayor |w|, D_arch fijado por `--darch`) converge: **gen 0 del
-> qwen27 @ D_arch 0.10 → KL 0.0115** (mejor que el perfil uniforme 0.042 y muy
-> por debajo de la CPPN binaria 2.5-8.8). La corrida completa (12 gen, ~4-5 h)
-> queda en `python/scripts/via_b_evolve.py --magnitude --model <qwen27> ...` con
-> `step=16` para el decode del CPPN a escala 27B.
+> + conexiones de mayor |w|) converge y **completa las 12 generaciones**:
+>
+> | gen | 0 | 1 | 2 | 3 | 4 | 5 | 6-11 |
+> |-----|---|---|---|---|---|---|------|
+> | best_kl | 0.0115 | 0.0154 | 0.0109 | 0.0159 | 0.0142 | **0.0092** | 0.0092-0.0112 |
+>
+> **Resultado: KL 0.0092 @ D_arch 0.1223 (gate) — convergencia estable desde la
+> gen 5.** El mejor perfil por capa aprendido por el CPPN es estructuralmente
+> coherente: capas iniciales casi densas (0.05), pico de esparsidad en las capas
+> medias (~0.31 en la capa 15), y las **últimas 20 capas completamente densas**
+> (0.0 — sensibles antes del lm_head). Referencias: perfil uniforme 0.042,
+> topología CPPN binaria 2.5-8.8. Mejor genoma: `via_b_best_genome_qwen27_mag.bin`
+> (466 f32); histórico: `via_b_history_qwen27_mag.json`.
 
 | Criterio | Estado |
 |---|---|
