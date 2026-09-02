@@ -108,7 +108,8 @@
   `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf` (~16 GB).
 - Descarga a `models/` (script `python/scripts/download_models.py`).
 - **Auditoría real:** ALIA-40b = 48 capas, bloques FFN `[8192, 24576]` (Q4_K);
-  Qwen3.8-27B = 65 bloques FFN `[5120, 17408]` (IQ4_XS) + 336 tensores SSM.
+  Qwen3.8-27B = 65 bloques FFN `[5120, 17408]` (Q4_K_M, variante "UD" del GGUF de
+  unsloth) + 336 tensores SSM (gated-DeltaNet).
 
 ## D13 — Escalado del decode CPPN y fixes críticos (Fase 7)
 - **Bug de eventos (`enqueue_chunked`):** `opencl3` libera el `cl_event` en el

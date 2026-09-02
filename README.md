@@ -66,5 +66,5 @@ cd python
 | 3 — Kernels OpenCL 3.0 | ✅ completada (cppn_decode, spmm_dense/csr, gram + `validate_opencl.py`; err < 1e-6 en RTX 4050) |
 | 4 — Loop evolutivo integrado | ✅ completada (`evolve`: CPPN→topología→SpMM→Gram→CKA→CMA-ES, seed replay, τ evolutivo) |
 | 5 — Hooks del modelo real | ✅ infraestructura + **piloto real** (`pilot_block.py`: profesor real de SmolLM2/Qwen/ALIA vía `hayai dump_tensor_f32` → evolución → consolidación) |
-| 6 — Cierre (contrato de Fase 2) | ✅ GGUF disperso sin densificar + `contract.py`; KL/ARC/GSM8K a nivel de modelo pendientes |
-| 7 — Integración con hayai v0.2.3 | ✅ en curso: formato alineado (I8=24, offsets relativos), `hayai plan`+`load_sparse_dag` OK, fix eventos/decode, piloto de bloque real validado; KL/ARC/GSM8K de modelo completo pendientes |
+| 6 — Cierre (contrato de Fase 2) | ✅ GGUF disperso sin densificar + `contract.py`; KL a nivel de modelo **medido** (27B magnitud ≈ 0.01); ARC/GSM8K pendientes |
+| 7 — Integración con hayai v0.2.3 | ✅ completada: formato alineado (I8=24, offsets relativos), `hayai plan`+`load_sparse_dag` OK, fixes del batch hybrid (rms_norm DeltaNet, kernel batched Q4_K tiles, teacher seq) — re-baseline coincide con producción (KL 0.015-0.143); ARC/GSM8K de modelo completo pendientes |

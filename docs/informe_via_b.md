@@ -141,13 +141,14 @@ es 1/3 del FFN y up/down quedan densos)*
 | SmolLM2-135M | 7.8 % | ~4.6 % | 1.68 | n_pos 24, CPU==GPU |
 | Qwen3.5-4B | 6.4 % | ~3.7 % | 0.379 | n_pos 8 |
 | ALIA-40b | 1.8 % | ~1.3 % | 0.776 | n_pos 8 |
-| Qwen3.8-27B | 10.7 % | ~6.8 % | 0.394 | n_pos 4 |
+| Qwen3.8-27B | ~~10.7 %~~ → magnitud 12.2 % (gate) | ~4.1 % | ~~0.394~~ → **0.009-0.010** | n_pos 4 |
 
 *`D_arch × fracción del cómputo que es FFN` (~0.6-0.7 según modelo). El 27B
 además alcanzó un punto casi sin pérdida: KL 0.0005 a 0.4 % de compresión.
 
-> ⚠️ **NOTA DE REVISIÓN (sesión de optimización GPU, 2026-08-31):** el valor de
+> ✅ **RESOLUCIÓN DEFINITIVA (sesión de optimización GPU, 2026-08-31):** el valor de
 > esta tabla para **Qwen3.8-27B de la EVOLUCIÓN Vía B (KL 0.394 @ D_arch 0.107)**
+> era un **artefacto del batch-eval roto**, no del modelo ni de la topología.
 > NO es reproducible: la evolución real (topología CPPN, decode-pop + kl_eval_batch,
 > n_layers 65) produce **KL 2.38-2.53**, y el genoma qwen35 transferido da KL ~3.0
 > (batch) / 8.82 (producción). **Sin embargo, la FRONTERA UNIFORME POR MAGNITUD del
@@ -155,7 +156,8 @@ además alcanzó un punto casi sin pérdida: KL 0.0005 a 0.4 % de compresión.
 > 0.05-0.25 (producción `embed_sparse --sparsities` + `kl_eval`, n_pos 4). El 27B
 > es muy tolerable a la PODA POR MAGNITUD; la brecha (0.14 vs 2.5-8.8) es de la
 > TOPOLOGÍA CPPN binaria, que no captura la magnitud a escala 27B. El "0.394"
-> original de la evolución queda **bajo auditoría**; la frontera queda confirmada.
+> original quedó explicado y el resultado corregido (magnitud + perfil CPPN) es
+> **KL 0.0092 (batch) / 0.0103 (producción)** — ver la resolución completa abajo.
 
 **Perfiles de densidad por capa** (gate, subsample; % de conexiones activas):
 
@@ -171,9 +173,12 @@ Qwen, intermedias de SmolLM2) y mantiene densas las críticas (capas finales).
 
 ### 4.3 Vía B vs baseline uniforme
 
-- **Qwen3.8-27B:** la evolución logra **10.7 % de compresión con KL 0.394**,
-  superando el punto uniforme más lejano medido (sp 0.25 → 8.3 % / KL 0.143).
-  En el marco del objetivo (max compresión @ KL≤0.5) la evolución gana.
+- **Qwen3.8-27B:** el "0.394 @ 10.7 %" era un artefacto del batch-eval roto
+  (ver resolución §4.2). El resultado corregido es la **poda por magnitud con
+  perfil de densidad del CPPN**: **KL 0.009-0.010 @ D_arch 0.1223 (gate)**,
+  superando ampliamente el punto uniforme sp 0.25 (KL 0.143). En el marco del
+  objetivo (max compresión @ KL≤0.5) la **magnitud + perfil gana** sobre la
+  topología CPPN binaria (KL 2.5-8.8 a igual compresión).
 - **SmolLM2 / ALIA:** la evolución no supera al baseline uniforme a igual
   compresión en el presupuesto usado (4 gens); la topología CPPN añade
   expresividad pero requiere más exploración (ver §6).
