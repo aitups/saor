@@ -274,6 +274,12 @@ Fases ejecutadas y validadas (repo saor + hayai):
 > (0.0 — sensibles antes del lm_head). Referencias: perfil uniforme 0.042,
 > topología CPPN binaria 2.5-8.8. Mejor genoma: `via_b_best_genome_qwen27_mag.bin`
 > (466 f32); histórico: `via_b_history_qwen27_mag.json`.
+>
+> **Validación cruzada de producción** (mejor perfil → `embed_sparse` D16 →
+> `kl_eval` StreamingGenerator, teacher seq): **KL 0.0103 @ D_arch 0.0408**
+> (modelo completo; 45 capas esparsas + 20 densas). Coincide con el batch
+> (0.0092, den del gate) — ambos evaluadores confirman **KL ≈ 0.01** para el
+> perfil de magnitud optimizado.
 
 | Criterio | Estado |
 |---|---|
