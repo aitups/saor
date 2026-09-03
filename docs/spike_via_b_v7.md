@@ -25,8 +25,19 @@ Consecuencia: el smol no puede demostrar la v7 → el testbed debe ser el 4B.
 | Modelo | Magnitud (óptimo) | CPPN libre 9-D (v1, topología) | ¿≤0.15 alcanzable? |
 |---|---|---|---|
 | SmolLM2-135M | 0.42 @ D_arch 0.017 | 1.68 @ D_arch 0.078 | ❌ ni el óptimo |
-| **Qwen3.5-4B** | 0.045-0.108 @ D_arch 0.017-0.033 | **0.0805 @ D_arch 0.027** | ✅ ambos |
+| **Qwen3.5-4B** | 0.045-0.108 @ D_arch 0.017-0.033 | **0.447 @ D_arch 0.064** (corregido) | ✅ solo magnitud |
 | Qwen3.8-27B | 0.009-0.14 @ D_arch 0.017-0.083 | 2.5-8.8 | ✅ solo magnitud |
+
+> **CORRECCIÓN (2026-09-01):** los valores históricos de la CPPN-topología del 4B
+> (KL 0.379 y 0.0805 @ D_arch 0.027 del `via_b_history_qwen35`) se midieron con
+> el **batch con el bug del kernel batcheado Q4_K** (hidden 2560 > 2048 → el bug
+> del tile `t0>0` los afectaba). Re-medido con la **producción** (gemv simple,
+> evaluador correcto): el genoma CPPN libre del 4B da **KL 0.447 @ D_arch 0.064**.
+> La brecha magnitud vs CPPN-libre en el 4B es mayor de lo que se creía.
+>
+> Nota v7: estos valores son de la CPPN **por capas** de la v1 y **no aplican** al
+> sustrato **9-D global** de la v7 (nunca medido). Solo son la referencia del
+> punto de partida dirigido.
 
 **Lectura:** el 4B es el único testbed rápido que demuestra ≤0.15 **tanto con el
 óptimo (magnitud) como con la búsqueda libre (CPPN 9-D)**. La brecha magnitud vs
