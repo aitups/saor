@@ -18,6 +18,23 @@
   partida; si la expresividad no alcanza, se amplía la entrada (p. ej. 9-D con
   derivadas `dx,dy,dz`, `sin/cos`).
 
+## 1b. Resultado del spike M2 (2026-09-01): el sustrato se amplía a 9-D global
+
+El spike M2 (hypernetwork + CMA-ES contra profesor sintético suave, 220 gen,
+λ=88) mide la expresividad del sustrato:
+
+| Sustrato | MSE residual | Varianza explicada |
+|---|---|---|
+| **6-D crudo** `(x1,y1,x2,y2,z1,z2)` | 0.0334 (≈ energía) | **~0 %** (no expresa ni un profesor suave) |
+| **9-D global** (+ `dx,dy,dz` derivadas) | 0.0293 | **~88 %** |
+
+**Decisión empírica:** el sustrato del modelo compuesto es **9-D global**
+(las 6 coordenadas + las 3 diferencias derivadas). La 6-D cruda carece de la
+expresividad necesaria incluso para pesos suaves; la 9-D (sin coste de OOM
+apreciable — 3 dims extra de entrada, genoma 466→~560 floats) la alcanza. Se
+mantiene la regla de diseño: **todo global** (z1,z2 = profundidad del modelo
+nuevo, nunca sustratos por capas).
+
 ## 2. Contrato de ejecución (runtime)
 
 ### I/O fija (frontera del modelo nuevo)

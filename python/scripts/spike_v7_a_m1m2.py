@@ -56,12 +56,13 @@ class HyperCppn:
 
 
 def make_teacher_layer(d_out: int, d_in: int, seed: int) -> np.ndarray:
-    """Profesor sintético suave: pesos con estructura geométrica (senos)."""
+    """Profesor sintético SUAVE: W[j,i] suave en (i,j) — el caso CPPN-amigable."""
     rng = np.random.default_rng(seed)
     xx = np.linspace(-1, 1, d_in, dtype=np.float32)
-    W = np.zeros((d_out, d_in), np.float32)
-    for j in range(d_out):
-        W[j] = np.sin(np.pi * (xx * (1 + j % 4) / 3.0)) * rng.normal(0, 0.5)
+    yy = np.linspace(-1, 1, d_out, dtype=np.float32)
+    # f(i,j) = sin(pi*x_i*(1+y_j)/2) * cos(pi*y_j/2) — suave y separable-ish.
+    W = np.sin(np.pi * xx[None, :] * (1 + yy[:, None]) / 2.0) * np.cos(np.pi * yy[:, None] / 2.0)
+    W = (W * rng.normal(0, 0.6, (d_out, 1)).astype(np.float32)).astype(np.float32)
     return W
 
 
@@ -78,7 +79,9 @@ def main() -> int:
     ap.add_argument("--d-in", type=int, default=48)
     ap.add_argument("--d-out", type=int, default=48)
     ap.add_argument("--n-data", type=int, default=200)
-    ap.add_argument("--gens", type=int, default=80)
+    ap.add_argument("--gens", type=int, default=220)
+    ap.add_argument("--lambda-mult", type=int, default=4,
+                    help="multiplicador de la poblacion CMA-ES (default 4x22=88)")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--raw-6d", action="store_true", help="entrada 6-D cruda (default 9-D)")
     args = ap.parse_args()
@@ -93,6 +96,8 @@ def main() -> int:
     input_dim = 6 if args.raw_6d else 9
     n_params = (HIDDEN * input_dim + HIDDEN + HIDDEN * HIDDEN + HIDDEN + 2 * HIDDEN + 2)
     params = CmaEsParams(n_params, args.seed)
+    params.lambda_ = max(8, params.lambda_ * args.lambda_mult)
+    params.mu = params.lambda_ // 2
     mean0 = np.random.default_rng(args.seed).standard_normal(n_params).astype(np.float32) * 0.4
     state = CmaEsState(params, mean0)
 
