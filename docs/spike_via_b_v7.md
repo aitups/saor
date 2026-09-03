@@ -83,6 +83,26 @@ genoma aleatorio (gen-0 sin warm-start) midiendo si CMA-ES descubre estructura
 que reduzca la KL desde el caos — que es la prueba pura de la hipótesis no
 dirigida de la v7, con el suelo alto como posible "hallazgo del límite".
 
+### 5b. Medición del KL gen-0 del warm-up (2026-09-01, la prueba real)
+
+La premisa del warm-up ("la regresión deja KL ≈ 0 desde el que evolucionar") se
+midió de forma **comportamental** (no proxy): regresión ELM del genoma al gate
+real del smol (la mejor réplica que una CPPN geométrica puede pintar) → inyección
+densa D16 all-active (gen-0, `link=1`, pesos de la CPPN) → `kl_eval` (n_pos 8):
+
+| Medición | Resultado |
+|---|---|
+| Fidelidad de la réplica (1 = perfecta) | **0.0007** |
+| **KL gen-0 real (solo la gate 0 reemplazada)** | **7.94** |
+
+**Conclusión:** reemplazar UNA sola gate (capa 0 de 30) con la aproximación del
+warm-up colapsa el modelo (KL 7.94 ≈ modelo aleatorio). El warm-up con la
+geometría de canal **cruda** (índice escalado) no deja KL ≈ 0: la CPPN no puede
+expresar los pesos reales (no-suaves en el orden de canales). **La premisa del
+warm-up requiere geometría de canal aprendida/permutada** (que las coordenadas se
+ordenen para que W sea suave en ellas) o la gen-0 parte del caos.
+
+
 ## 6. Estados
 
 - ✅ Tags: `saor v1.0.0-via-b`, `hayai v0.3.0` (frontera de la variante dirigida).
