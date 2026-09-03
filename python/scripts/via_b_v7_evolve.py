@@ -125,7 +125,9 @@ def main() -> int:
             g = build(pop.candidates[:, c])
             tot = 0.0
             cnt = 0
-            for (layer, block, d_out, d_in, which), _ in mats.items():
+            for (layer, block), W in mats.items():
+                d_out, d_in = W.shape
+                which = "hi" if block != "ffn_down" else "ih"
                 z = -1.0 + 2.0 * (layer + 0.5) / N_LAYERS
                 w = decode_block(g, d_in, d_out, z, which, args.tau,
                                  idx_sample=sample_idx[(layer, block)])[0]
