@@ -57,7 +57,33 @@ v7 quiere cerrar con el sustrato 6-D.
 - **Pregunta B (cross-capa, después):** requiere el `ExecPlan` de grafo (skipping
   de bloques + puentes asimétricos) — la libertad real de la v7.
 
-## 4. Estados
+## 5. Hallazgo M3b (2026-09-01): la CPPN no puede warm-startar los pesos reales
+
+La v7-b especifica que el genoma de la gen-0 se inicializa por **regresión** para
+que la CPPN pinte una réplica casi exacta de los pesos del profesor (KL inicial
+≈ 0). Medición sobre un slice real del gate de Qwen3.5-4B (w.0.ffn_gate,
+`[512×512]`, regresión ELM de 256 ocultos — la mejor réplica para esa arquitectura):
+
+| Métrica | Valor | Implicación |
+|---|---|---|
+| Correlación filas adyacentes (pesos reales) | **-0.001** | sin estructura local en (i,j) |
+| Correlación columnas adyacentes | **0.013** | sin estructura local |
+| CKA(CPPN-recon, W real) | **0.0002** | la CPPN no regresa los pesos |
+| CKA(CPPN-recon, W suavizado) | 0.0037 | ni el suavizado es expresable |
+
+**Conclusión:** los pesos FFN entrenados son ~aleatorios en el orden de canales
+(sin estructura suave que una CPPN geométrica pueda capturar). El warm-start por
+regresión de la v7-b **no alcanzará KL inicial ≈ 0**: la gen-0 partirá de un KL
+alto (comportamiento ~aleatorio de los pesos aproximados). Esto coincide con el
+hallazgo D15 previo.
+
+**Consecuencia operativa:** o (a) diseño redefine el warm-start (p. ej. geometría
+de canal aprendida/permutada, no el índice crudo), o (b) la evolución parte de un
+genoma aleatorio (gen-0 sin warm-start) midiendo si CMA-ES descubre estructura
+que reduzca la KL desde el caos — que es la prueba pura de la hipótesis no
+dirigida de la v7, con el suelo alto como posible "hallazgo del límite".
+
+## 6. Estados
 
 - ✅ Tags: `saor v1.0.0-via-b`, `hayai v0.3.0` (frontera de la variante dirigida).
 - ✅ Baseline del spike (este documento).
