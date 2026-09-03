@@ -98,6 +98,7 @@ fn main() -> Result<(), String> {
     let mut sparsities: Option<PathBuf> = None;
     let mut genome: Option<PathBuf> = None;
     let mut tau = 0.42f32;
+    let mut all_blocks = false;
     let mut use_gpu = false;
     let mut i = 1;
     while i < args.len() {
@@ -129,6 +130,7 @@ fn main() -> Result<(), String> {
                 }
             }
             "--gpu" => use_gpu = true,
+            "--all-blocks" => all_blocks = true,
             other => {
                 return Err(format!("argumento desconocido '{other}'"));
             }
@@ -220,7 +222,7 @@ fn main() -> Result<(), String> {
                 (topo.adjacency_bits, topo.weights.len())
             } else {
                 let layer_sp = sp.get(layer).copied().unwrap_or(0.0);
-                let block_sp = if block == "ffn_gate" { layer_sp } else { 0.0 };
+                let block_sp = if all_blocks || block == "ffn_gate" { layer_sp } else { 0.0 };
                 if block_sp <= 0.0 {
                     continue; // no reemplazar: el tensor denso original se conserva
                 }

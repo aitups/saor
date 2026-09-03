@@ -102,6 +102,26 @@ expresar los pesos reales (no-suaves en el orden de canales). **La premisa del
 warm-up requiere geometría de canal aprendida/permutada** (que las coordenadas se
 ordenen para que W sea suave en ellas) o la gen-0 parte del caos.
 
+### 5c. Medición al nivel del BLOQUE COMPLETO (corrección del proceso)
+
+Corrigiendo el error de descomposición (medir una gate aislada): el warm-up se
+ejecutó sobre el **FFN completo** (gate+up+down) de las **30 capas** del smol
+(90 matrices aproximadas por la regresión CPPN e inyectadas en el D16 all-active,
+`--all-blocks` añadido al embed):
+
+| Medición | Resultado |
+|---|---|
+| Matrices del bloque completo aproximadas | 90 (30 capas × gate/up/down) |
+| **KL gen-0 (modelo completo, FFN completo reescrito)** | **14.65** |
+
+**Resultado al nivel completo:** el modelo queda ~aleatorio (KL 14.65). El warm-up
+con la geometría cruda no deja KL ≈ 0 tampoco al nivel de bloque completo. La
+corrección de rumbo NO es abandonar la v7, sino **añadir geometría de canal
+aprendida** al sustrato (coordenadas por canal evolucionadas/regresadas, no el
+índice crudo) para que la CPPN pueda expresar los pesos y el warm-up cumpla su
+función.
+
+
 
 ## 6. Estados
 
