@@ -52,20 +52,29 @@ class V7Cppn:
         return out[:, 0], 1.0 / (1.0 + np.exp(-out[:, 1]))
 
 
+_GRID_CACHE: dict = {}
+
+
 def geometry_matrix(d_in: int, d_out: int, z1: float, z2: float,
                     input_dim: int = 9) -> np.ndarray:
     """Grid [d_out*d_in, 9] de la geometría global para una matriz."""
+    key = (d_in, d_out, round(z1, 4), round(z2, 4), input_dim)
+    if key in _GRID_CACHE:
+        return _GRID_CACHE[key]
     xi = np.linspace(-1, 1, d_in, dtype=np.float32)
     xj = np.linspace(-1, 1, d_out, dtype=np.float32)
     Xj, Xi = np.meshgrid(xj, xi, indexing="ij")
     if input_dim == 6:
-        return np.stack([Xi, np.zeros_like(Xi), Xj, np.zeros_like(Xj),
-                         np.full_like(Xi, z1), np.full_like(Xi, z2)],
-                        axis=-1).reshape(-1, 6)
-    return np.stack([Xi, np.zeros_like(Xi), Xj, np.zeros_like(Xj),
-                     np.full_like(Xi, z1), np.full_like(Xi, z2),
-                     Xj - Xi, np.zeros_like(Xj), np.zeros_like(Xi)],
-                    axis=-1).reshape(-1, 9)
+        g = np.stack([Xi, np.zeros_like(Xi), Xj, np.zeros_like(Xj),
+                      np.full_like(Xi, z1), np.full_like(Xi, z2)],
+                     axis=-1).reshape(-1, 6)
+    else:
+        g = np.stack([Xi, np.zeros_like(Xi), Xj, np.zeros_like(Xj),
+                      np.full_like(Xi, z1), np.full_like(Xi, z2),
+                      Xj - Xi, np.zeros_like(Xj), np.zeros_like(Xi)],
+                     axis=-1).reshape(-1, 9)
+    _GRID_CACHE[key] = g
+    return g
 
 
 def decode_block(g: V7Cppn, d_in: int, d_out: int, z1: float, z2: float,

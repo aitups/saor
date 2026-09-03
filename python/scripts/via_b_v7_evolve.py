@@ -61,7 +61,8 @@ def eval_candidate(g: V7Cppn, n_pos: int) -> float:
     if "ok" not in r.stdout:
         return float("inf")
     r = subprocess.run([KLE, "--orig", SMOL, "--sparse", emb, "--prompts", P,
-                        "--n-positions", str(n_pos), "--device", "auto"],
+                        "--n-positions", str(n_pos), "--device", "auto",
+                        "--teacher-cache", r"d:\Documents\pySrc\.scratch\v7_teacher.bin"],
                        capture_output=True, text=True, timeout=1800)
     outs = [l for l in (r.stdout + r.stderr).splitlines() if "kl_global" in l]
     if not outs:
