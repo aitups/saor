@@ -277,6 +277,10 @@ pub struct BlockReplacement {
     /// `true` si el fichero de pesos está cuantizado a **Q4_K** (144 bytes/256
     /// elementos) en lugar de F32. El tensor `ffn_dag_weights` se declara Q4_K.
     pub weights_q4: bool,
+    /// Bytes Q4_K del bloque en RAM (decode v7 directo a GGUF, sin fichero
+    /// intermedio). `weights_q4` debe ser `true`. Si está presente, tiene
+    /// prioridad sobre `weights_file`.
+    pub weights_q4_data: Option<Vec<u8>>,
 }
 
 /// Reporte de la reescritura.
@@ -383,21 +387,28 @@ pub fn rewrite_embedded(
         let block = &r.block;
         let bn = base_name(&r.tensor);
         // Pesos F32: en memoria (normal) o en fichero externo (streaming, ALIA).
-        let (wdata, wfile, wnbytes) = match &r.weights_file {
-            Some(path) => {
-                let len = std::fs::metadata(path)
-                    .map_err(|e| format!("pesos {path:?}: {e}"))?
-                    .len();
-                (None, Some(path.clone()), len)
+        // Los bytes Q4_K en RAM (decode v7 directo) tienen prioridad.
+        let (wdata, wfile, wnbytes) = match &r.weights_q4_data {
+            Some(q4) => {
+                let len = q4.len() as u64;
+                (Some(q4.clone()), None, len)
             }
-            None => {
-                let mut wdata = Vec::with_capacity(block.weights.len() * 4);
-                for w in &block.weights {
-                    wdata.extend_from_slice(&w.to_le_bytes());
+            None => match &r.weights_file {
+                Some(path) => {
+                    let len = std::fs::metadata(path)
+                        .map_err(|e| format!("pesos {path:?}: {e}"))?
+                        .len();
+                    (None, Some(path.clone()), len)
                 }
-                let len = wdata.len() as u64;
-                (Some(wdata), None, len)
-            }
+                None => {
+                    let mut wdata = Vec::with_capacity(block.weights.len() * 4);
+                    for w in &block.weights {
+                        wdata.extend_from_slice(&w.to_le_bytes());
+                    }
+                    let len = wdata.len() as u64;
+                    (Some(wdata), None, len)
+                }
+            },
         };
         out.push(OutTensor {
             name: format!("{bn}{ADJACENCY_SUFFIX}"),
@@ -839,6 +850,7 @@ mod tests {
                 block: block.clone(),
                 weights_file: None,
                 weights_q4: false,
+                weights_q4_data: None,
             }],
         )
         .expect("rewrite");

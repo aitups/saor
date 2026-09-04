@@ -23,6 +23,7 @@ use opencl3::types::{cl_event, cl_mem_flags};
 const CL_MEM_READ_WRITE: cl_mem_flags = 1;
 
 const CPPN_DECODE_SRC: &str = include_str!("../kernels/cppn_decode.cl");
+const CPPN_DECODE_V7_SRC: &str = include_str!("../kernels/cppn_decode_v7.cl");
 const SPMM_SRC: &str = include_str!("../kernels/spmm.cl");
 const GRAM_SRC: &str = include_str!("../kernels/gram.cl");
 
@@ -83,6 +84,7 @@ impl ClEngine {
             self.build_program("cppn_decode", CPPN_DECODE_SRC)?,
             self.build_program("spmm", SPMM_SRC)?,
             self.build_program("gram", GRAM_SRC)?,
+            self.build_program("cppn_decode_v7", CPPN_DECODE_V7_SRC)?,
         ];
         Ok(())
     }
@@ -247,6 +249,64 @@ impl ClEngine {
         // Kernel 2: empaquetado u32 -> bit-tensor u8 (LSB-first).
         let mut a = self.buffer::<u8>(n_bytes)?;
         let pack = self.kernel(0, "pack_adjacency")?;
+        self.set_arg(&pack, 0, &a_words)?;
+        self.set_arg(&pack, 1, &a)?;
+        self.enqueue_chunked(&pack, n_words, CPPN_DECODE_CHUNK)?;
+
+        let w_out = self.read(&w, total)?;
+        let a_out = self.read(&a, n_bytes)?;
+        let act_out = self.read(&act, 1)?;
+        Ok((w_out, a_out, act_out[0]))
+    }
+
+    /// Decodifica un genoma v7 (CPPN de pesos + geometría aprendida por canal,
+    /// 7250 f32) para un bloque `d_in x d_out`. `mode=0` ("hi": gate/up) toma la
+    /// coordenada de entrada de `coord_h` y la de salida de `coord_i`; `mode=1`
+    /// ("ih": down) al revés. Devuelve `(w_dense, adjacency, active)` donde
+    /// `w_dense` es `[d_in x d_out]` i-mayor enmascarada (ceros donde `l <= tau`)
+    /// y `adjacency` el bit-tensor `ffn_dag_adjacency`.
+    pub fn cppn_decode_v7(
+        &self,
+        genome: &[f32],
+        d_in: usize,
+        d_out: usize,
+        tau: f32,
+        layer: usize,
+        n_layers: usize,
+        mode: usize,
+    ) -> Result<(Vec<f32>, Vec<u8>, u32), String> {
+        if genome.len() != 7250 {
+            return Err(format!(
+                "cppn_decode_v7: esperaba genoma v7 de 7250 f32, hay {}",
+                genome.len()
+            ));
+        }
+        let total = d_in * d_out;
+        let n_words = total.div_ceil(32);
+        let n_bytes = total.div_ceil(8);
+        let mut g = self.buffer::<f32>(genome.len())?;
+        let mut w = self.buffer::<f32>(total)?;
+        let mut a_words = self.buffer::<u32>(n_words)?;
+        let mut act = self.buffer::<u32>(1)?;
+        self.write(&mut g, genome)?;
+        self.write(&mut act, &[0u32])?;
+        self.write(&mut a_words, &vec![0u32; n_words])?;
+
+        let kernel = self.kernel(3, "cppn_decode_v7")?;
+        self.set_arg(&kernel, 0, &g)?;
+        self.set_arg(&kernel, 1, &(d_in as i32))?;
+        self.set_arg(&kernel, 2, &(d_out as i32))?;
+        self.set_arg(&kernel, 3, &tau)?;
+        self.set_arg(&kernel, 4, &(layer as i32))?;
+        self.set_arg(&kernel, 5, &(n_layers as i32))?;
+        self.set_arg(&kernel, 6, &(mode as i32))?;
+        self.set_arg(&kernel, 7, &w)?;
+        self.set_arg(&kernel, 8, &a_words)?;
+        self.set_arg(&kernel, 9, &act)?;
+        self.enqueue_chunked(&kernel, total, CPPN_DECODE_CHUNK)?;
+
+        let mut a = self.buffer::<u8>(n_bytes)?;
+        let pack = self.kernel(3, "v7_pack_adjacency")?;
         self.set_arg(&pack, 0, &a_words)?;
         self.set_arg(&pack, 1, &a)?;
         self.enqueue_chunked(&pack, n_words, CPPN_DECODE_CHUNK)?;

@@ -97,6 +97,7 @@ fn main() -> Result<(), String> {
     let mut weights_dir: Option<PathBuf> = None;
     let mut sparsities: Option<PathBuf> = None;
     let mut genome: Option<PathBuf> = None;
+    let mut genome_v7: Option<PathBuf> = None;
     let mut tau = 0.42f32;
     let mut all_blocks = false;
     let mut use_gpu = false;
@@ -123,6 +124,10 @@ fn main() -> Result<(), String> {
                 i += 1;
                 genome = args.get(i).map(PathBuf::from);
             }
+            "--genome-v7" => {
+                i += 1;
+                genome_v7 = args.get(i).map(PathBuf::from);
+            }
             "--tau" => {
                 i += 1;
                 if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
@@ -140,8 +145,11 @@ fn main() -> Result<(), String> {
     let model = model.ok_or("falta --model <gguf>")?;
     let out = out.ok_or("falta --out <gguf>")?;
     let weights_dir = weights_dir.ok_or("falta --weights <dir>")?;
-    if use_gpu && genome.is_none() {
-        return Err("--gpu requiere --genome <genome.bin>".into());
+    if use_gpu && genome.is_none() && genome_v7.is_none() {
+        return Err("--gpu requiere --genome <genome.bin> o --genome-v7 <genome.bin>".into());
+    }
+    if genome_v7.is_some() && !use_gpu {
+        return Err("--genome-v7 requiere --gpu (el decode v7 se ejecuta en la GPU)".into());
     }
 
     let meta = std::fs::read_to_string(weights_dir.join("meta.json"))
@@ -157,6 +165,22 @@ fn main() -> Result<(), String> {
         Some(p) => {
             let flat = read_f32_bin(p)?;
             Some(saor_domain::cppn::CppnGenome::from_flatten(&flat))
+        }
+        None => None,
+    };
+    // Genoma v7 plano (CPPN de pesos + geometría aprendida; 7250 f32) para el
+    // decode GPU directo a GGUF (`--genome-v7`). El layout es espejo de
+    // `python/saor_orchestrator/reference/v7cppn.py`; lo valida el kernel.
+    let genome_v7_flat: Option<Vec<f32>> = match &genome_v7 {
+        Some(p) => {
+            let flat = read_f32_bin(p)?;
+            if flat.len() != 7250 {
+                return Err(format!(
+                    "--genome-v7: esperaba 7250 f32, hay {} (¿genoma v7 con hidden=48?)",
+                    flat.len()
+                ));
+            }
+            Some(flat)
         }
         None => None,
     };
@@ -192,6 +216,43 @@ fn main() -> Result<(), String> {
             let d_in = meta_json[&key]["d_in"].as_u64().unwrap_or(0) as usize;
             let d_out = meta_json[&key]["d_out"].as_u64().unwrap_or(0) as usize;
             if d_in == 0 || d_out == 0 {
+                continue;
+            }
+            // Modo v7 (decode GPU directo): la CPPN-v7 genera los pesos con la
+            // geometría aprendida; se cuantizan Q4_K en RAM y se embeben sin
+            // tocar disco (sin .bin de matrices ni ficheros de pesos).
+            if let Some(v7flat) = &genome_v7_flat {
+                let e = engine.as_ref().ok_or("--genome-v7 requiere --gpu")?;
+                let mode = if block == "ffn_down" { 1 } else { 0 };
+                let (w_dense, adj, act) = e
+                    .cppn_decode_v7(v7flat, d_in, d_out, tau, layer, n_layers, mode)?;
+                let mut weights = Vec::with_capacity(act as usize);
+                for i in 0..d_in {
+                    for j in 0..d_out {
+                        let conn = i * d_out + j;
+                        if adj[conn >> 3] & (1 << (conn & 7)) != 0 {
+                            weights.push(w_dense[conn]);
+                        }
+                    }
+                }
+                let pad = (256 - weights.len() % 256) % 256;
+                let mut padded = weights;
+                padded.resize(padded.len() + pad, 0.0);
+                let q4 = saor_streamer::q4k::quantize_q4_k(&padded, padded.len())?;
+                replacements.push(BlockReplacement {
+                    tensor: format!("blk.{layer}.{block}.weight"),
+                    block: SparseBlock {
+                        d_in,
+                        d_out,
+                        tau,
+                        genome: Vec::new(),
+                        adjacency: adj,
+                        weights: Vec::new(),
+                    },
+                    weights_file: None,
+                    weights_q4: true,
+                    weights_q4_data: Some(q4),
+                });
                 continue;
             }
             let wpath = weights_dir.join(format!("w.{layer}.{block}.bin"));
@@ -283,6 +344,7 @@ fn main() -> Result<(), String> {
                 },
                 weights_file: Some(wfile),
                 weights_q4: true,
+                weights_q4_data: None,
             });
         }
     }

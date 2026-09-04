@@ -89,6 +89,7 @@ pub fn cmd(args: &[String]) -> ExitCode {
             block,
             weights_file: None,
             weights_q4: false,
+            weights_q4_data: None,
         });
     }
 
